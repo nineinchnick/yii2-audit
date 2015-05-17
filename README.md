@@ -53,3 +53,4 @@ public function behaviors()
 
 * https://github.com/airblade/paper_trail
 * http://en.wikipedia.org/wiki/Slowly_changing_dimension
+* http://en.wikipedia.org/wiki/Change_data_capture
