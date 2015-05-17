@@ -9,6 +9,8 @@ namespace nineinchnic\audit\console;
 use nineinchnick\audit\components\AuditManager;
 use yii\base\Exception;
 use yii\console\Controller;
+use yii\db\Connection;
+use yii\di\Instance;
 use yii\helpers\Console;
 use yii\helpers\FileHelper;
 
@@ -17,10 +19,12 @@ use yii\helpers\FileHelper;
  *
  * Usage:
  *
- * 1. Attach the Trackable behavior to models.
- * 2. Run the 'install' action:
+ * 1. Attach the TrackableBehavior to models.
+ * 2. Run the 'migration' action:
  *
- *    yii audit --modelClass=app\models\SomeModel
+ *    yii audit/migration --modelName=app\models\SomeModel
+ *
+ * You can later verify that the audit objects do not require updating by running the 'report' action.
  *
  * @author Jan Waś <janek.jan@gmail.com>
  */
@@ -51,7 +55,7 @@ class AuditController extends Controller
      */
     public $templateFile;
     /**
-     * @var \yii\db\Connection|array|string the DB connection object, object configuration array
+     * @var Connection|array|string the DB connection object, object configuration array
      * or the application component ID of the DB connection to use
      * when managing audits.
      */
@@ -64,7 +68,10 @@ class AuditController extends Controller
     protected function getAuditManager()
     {
         if ($this->auditManager === null) {
-            $this->auditManager = \Yii::createObject(['class' => 'nineinchnick\audit\components\AuditManager']);
+            $this->auditManager = \Yii::createObject([
+                'class' => 'nineinchnick\audit\components\AuditManager',
+                'connectionID' => $this->db,
+            ]);
         }
         return $this->auditManager;
     }
@@ -93,6 +100,7 @@ class AuditController extends Controller
         if (!parent::beforeAction($action)) {
             return false;
         }
+        $this->db = Instance::ensure($this->db, Connection::className());
         if ($action->id !== 'migration') {
             return true;
         }
@@ -114,24 +122,21 @@ class AuditController extends Controller
     public function actionReport()
     {
         $hasErrors = false;
-        foreach ($this->auditManager->getReport() as $moduleName => $modelNames) {
-            echo $moduleName."\n";
-            foreach ($modelNames as $modelName => $result) {
-                if (!$result['enabled']) {
-                    $color = Console::FG_GREY;
-                } elseif ($result['valid'] === false) {
-                    $hasErrors = false;
-                    $color = Console::FG_RED;
-                } else {
-                    $color = Console::FG_GREEN;
-                }
-                $this->stdout(
-                    '    '.str_pad($modelName.' ', 40, '.').' '
-                    . ($result['enabled'] ? '+' : '-')
-                    . ($result['valid'] === false ? '!' : '')."\n",
-                    $color
-                );
+        foreach ($this->auditManager->getReport() as $modelName => $result) {
+            if (!$result['enabled']) {
+                $color = Console::FG_GREY;
+            } elseif ($result['valid'] === false) {
+                $hasErrors = false;
+                $color = Console::FG_RED;
+            } else {
+                $color = Console::FG_GREEN;
             }
+            $this->stdout(
+                '    '.str_pad($modelName.' ', 40, '.').' '
+                . ($result['enabled'] ? '+' : '-')
+                . ($result['valid'] === false ? '!' : '')."\n",
+                $color
+            );
         }
         return $hasErrors ? self::EXIT_CODE_ERROR : self::EXIT_CODE_NORMAL;
     }
@@ -143,11 +148,12 @@ class AuditController extends Controller
      */
     public function actionInstall($modelName, $run = false)
     {
+        /** @var \yii\db\Command[] $commands */
         $commands = $this->auditManager->getDbCommands($modelName, 'up');
 
         foreach ($commands as $command) {
             if (!$run) {
-                $this->stdout($command->getText().";\n");
+                $this->stdout($command->getSql().";\n");
             } else {
                 $command->execute();
             }
@@ -162,10 +168,11 @@ class AuditController extends Controller
      */
     public function actionRemove($modelName, $run = false)
     {
+        /** @var \yii\db\Command[] $commands */
         $commands = $this->auditManager->getDbCommands($modelName, 'down');
         foreach ($commands as $command) {
             if (!$run) {
-                $this->stdout($command->getText().";\n");
+                $this->stdout($command->getSql().";\n");
             } else {
                 $command->execute();
             }
@@ -191,11 +198,12 @@ EOD;
             'up' => [],
             'down' => [],
         ];
+        /** @var \yii\db\Command $command */
         foreach ($this->auditManager->getDbCommands($modelName, 'up') as $command) {
-            $queries['up'][] = strtr($queryTemplate, ['{Query}' => $command->getText()]);
+            $queries['up'][] = strtr($queryTemplate, ['{Query}' => $command->getSql()]);
         }
         foreach ($this->auditManager->getDbCommands($modelName, 'down') as $command) {
-            $queries['down'][] = strtr($queryTemplate, ['{Query}' => $command->getText()]);
+            $queries['down'][] = strtr($queryTemplate, ['{Query}' => $command->getSql()]);
         }
 
         if (empty($queries['up']) && empty($queries['down'])) {

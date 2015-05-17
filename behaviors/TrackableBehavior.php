@@ -12,6 +12,7 @@ use yii\base\Event;
 use yii\base\Exception;
 use yii\base\InvalidConfigException;
 use yii\db\ActiveRecord;
+use yii\db\Query;
 
 /**
  * TrackableBehavior configures how change history of a model is being tracked.
@@ -129,7 +130,7 @@ class TrackableBehavior extends Behavior
         /** @var ActiveRecord $owner */
         $owner = $this->owner;
         $modelClass = get_class($owner);
-        return ActiveRecord::populateRecord(new $modelClass, (new \yii\db\Query())
+        return ActiveRecord::populateRecord(new $modelClass, (new Query())
             ->select($owner->attributes())
             ->from($this->auditTableName)
             ->where(array_fill_keys($owner->getDb()->getTableSchema($this->auditTableName)->primaryKey, $version_id))
@@ -164,7 +165,7 @@ class TrackableBehavior extends Behavior
     {
         if ($enable === null) {
             if (($hasTrigger = $this->hasTrigger()) === null) {
-                throw new \yii\base\Exception('Cannot toggle tracking for model '
+                throw new Exception('Cannot toggle tracking for model '
                     .get_class($this->owner).', audit trigger doesn\'t exist');
             }
             $enable = !$hasTrigger;
