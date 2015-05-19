@@ -123,7 +123,7 @@ class AuditController extends Controller
     {
         $hasErrors = false;
         foreach ($this->auditManager->getReport() as $modelName => $result) {
-            if (!$result['enabled']) {
+            if (is_string($result) || !$result['enabled']) {
                 $color = Console::FG_GREY;
             } elseif ($result['valid'] === false) {
                 $hasErrors = false;
@@ -131,12 +131,12 @@ class AuditController extends Controller
             } else {
                 $color = Console::FG_GREEN;
             }
-            $this->stdout(
-                '    '.str_pad($modelName.' ', 40, '.').' '
-                . ($result['enabled'] ? '+' : '-')
-                . ($result['valid'] === false ? '!' : '')."\n",
-                $color
-            );
+            $this->stdout('    '.str_pad(is_string($result) ? $result : $modelName.' ', 40, '.').' ', $color);
+            if (is_array($result)) {
+                $this->stdout($result['enabled'] ? '+' : '-', $color);
+                $this->stdout($result['valid'] === false ? '!' : '', $color);
+            }
+            $this->stdout("\n");
         }
         return $hasErrors ? self::EXIT_CODE_ERROR : self::EXIT_CODE_NORMAL;
     }
