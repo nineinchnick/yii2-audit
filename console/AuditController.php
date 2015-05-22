@@ -4,7 +4,7 @@
  * @license BSD
  */
 
-namespace nineinchnic\audit\console;
+namespace nineinchnick\audit\console;
 
 use nineinchnick\audit\components\AuditManager;
 use yii\base\Exception;
@@ -70,7 +70,7 @@ class AuditController extends Controller
         if ($this->auditManager === null) {
             $this->auditManager = \Yii::createObject([
                 'class' => 'nineinchnick\audit\components\AuditManager',
-                'connectionID' => $this->db,
+                'db' => $this->db,
             ]);
         }
         return $this->auditManager;
@@ -122,7 +122,7 @@ class AuditController extends Controller
     public function actionReport()
     {
         $hasErrors = false;
-        foreach ($this->auditManager->getReport() as $modelName => $result) {
+        foreach ($this->getAuditManager()->getReport() as $modelName => $result) {
             if (!$result['enabled']) {
                 $color = Console::FG_GREY;
             } elseif ($result['valid'] === false) {
@@ -149,7 +149,7 @@ class AuditController extends Controller
     public function actionInstall($modelName, $run = false)
     {
         /** @var \yii\db\Command[] $commands */
-        $commands = $this->auditManager->getDbCommands($modelName, 'up');
+        $commands = $this->getAuditManager()->getDbCommands($modelName, 'up');
 
         foreach ($commands as $command) {
             if (!$run) {
@@ -169,7 +169,7 @@ class AuditController extends Controller
     public function actionRemove($modelName, $run = false)
     {
         /** @var \yii\db\Command[] $commands */
-        $commands = $this->auditManager->getDbCommands($modelName, 'down');
+        $commands = $this->getAuditManager()->getDbCommands($modelName, 'down');
         foreach ($commands as $command) {
             if (!$run) {
                 $this->stdout($command->getSql().";\n");
@@ -199,10 +199,10 @@ EOD;
             'down' => [],
         ];
         /** @var \yii\db\Command $command */
-        foreach ($this->auditManager->getDbCommands($modelName, 'up') as $command) {
+        foreach ($this->getAuditManager()->getDbCommands($modelName, 'up') as $command) {
             $queries['up'][] = strtr($queryTemplate, ['{Query}' => $command->getSql()]);
         }
-        foreach ($this->auditManager->getDbCommands($modelName, 'down') as $command) {
+        foreach ($this->getAuditManager()->getDbCommands($modelName, 'down') as $command) {
             $queries['down'][] = strtr($queryTemplate, ['{Query}' => $command->getSql()]);
         }
 
