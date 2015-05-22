@@ -72,7 +72,7 @@ class AuditManager extends Object
             : $this->schemaMap[$driver];
         $config['db'] = $this->db;
         $config['auditSchema'] = $this->auditSchema;
-        $config['auditSuffic'] = $this->auditSuffix;
+        $config['auditSuffix'] = $this->auditSuffix;
 
         return $this->backendAuditManager = \Yii::createObject($config);
     }

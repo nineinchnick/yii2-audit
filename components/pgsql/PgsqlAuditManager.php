@@ -128,7 +128,7 @@ EXCEPTION
                     ->select('tgname')
                     ->from('pg_trigger')
                     ->where('tgname=:value', [':value' => $triggerName])
-                    ->exist($this->db)
+                    ->exists($this->db)
                 && (new Query())
                     ->select('proname')
                     ->from('pg_proc')
@@ -291,7 +291,7 @@ EXCEPTION
             }
         }
 
-        $auditTableName = $model->getBehavior('audit')->auditTableName;
+        $auditTableName = $model->getBehavior('trackable')->auditTableName;
         if (($pos=strpos($auditTableName, '.')) !== false) {
             $auditSchema = substr($auditTableName, 0, $pos);
             $auditTableName = substr($auditTableName, $pos + 1);
@@ -335,7 +335,7 @@ EXCEPTION
         $triggerTemplate = $this->triggerTemplate($model->getTableSchema()->fullName, $auditTableName, $auditSchema);
         if (!$triggerTemplate['exists']) {
             foreach ($triggerTemplate[$direction] as $query) {
-                $commands[] = $$this->db->createCommand($query);
+                $commands[] = $this->db->createCommand($query);
             }
         }
         return $direction == 'down' ? array_reverse($commands) : $commands;

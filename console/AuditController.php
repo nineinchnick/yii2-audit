@@ -211,6 +211,8 @@ EOD;
             return self::EXIT_CODE_ERROR;
         }
 
+        $parts = explode('\\', $modelName);
+        $modelName = end($parts);
         $name = 'm'.gmdate('ymd_His').'_audit_'.$modelName;
         $file = $this->migrationPath . DIRECTORY_SEPARATOR . $name . '.php';
 
@@ -240,17 +242,17 @@ EOD;
         $template = <<<EOD
 <?php
 
-class {className} extends CDbMigration
+class {className} extends \yii\db\Migration
 {
-	public function safeUp()
-	{
+    public function safeUp()
+    {
 {queriesUp}
-	}
+    }
 
-	public function safeDown()
-	{
+    public function safeDown()
+    {
 {queriesDown}
-	}
+    }
 }
 EOD;
         return strtr($template, [
