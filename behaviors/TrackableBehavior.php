@@ -85,7 +85,7 @@ class TrackableBehavior extends Behavior
     public function init()
     {
         parent::init();
-        if ($this->store & self::STORE_RECORD && $this->auditTableName === null) {
+        if ($this->store && self::STORE_RECORD && $this->auditTableName === null) {
             throw new InvalidConfigException('TrackableBehavior requires auditTableName when storing full records, '
                 . 'configured for '.get_class($this->owner).'.');
         }
