@@ -89,7 +89,7 @@ SQL;
         $functionTemplate = <<<SQL
 CREATE OR REPLACE FUNCTION {$schemaName}.{$procName}()
   RETURNS trigger AS
-\\\$BODY$
+\$BODY$
 BEGIN
     IF (TG_OP = 'UPDATE') THEN
         INSERT INTO {$schemaName}.{$auditTableName}
@@ -108,7 +108,7 @@ BEGIN
         RETURN NULL;
     END IF;
 END
-\\\$BODY$
+\$BODY$
   LANGUAGE plpgsql VOLATILE SECURITY DEFINER
 SQL;
         /*
