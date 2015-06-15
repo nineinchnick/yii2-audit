@@ -17,19 +17,19 @@
         ?>
         <?php foreach ($model as $column => $value): ?>
             <?php
-            if (in_array($column, $notDisplayedColumns)) {
+            if (in_array($column, Yii::$app->controller->notDisplayedColumns)) {
                 continue;
             }
-            $first  = ($i % 3 === 1);
-            $third  = ($i % 3 === 0);
+            $first = ($i % 3 === 1);
+            $third = ($i % 3 === 0);
             $i++;
             ?>
             <?= ($first) ? "<tr>" : '' ?>
-                <td><?= $column ?></td>
-                <td colspan="2"><?= $value ?></td>
-            <?= ($third) ? "</tr>" : '' ?>
-        <?php endforeach; ?>
-    </tbody>
+        <td><?= Yii::$app->controller->getColumnLabel($column, $table) ?></td>
+        <td colspan="2"><?= $value ?></td>
+        <?= ($third) ? "</tr>" : '' ?>
+    <?php endforeach; ?>
+</tbody>
 </table>
 
 

@@ -20,6 +20,7 @@ use yii\widgets\ListView;
         'viewParams'   => [
             'arrayDiff'           => $arrayDiff,
             'notDisplayedColumns' => $notDisplayedColumns,
+            'table' => $model->table,
         ],
     ]);
     ?>
