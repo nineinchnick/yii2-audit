@@ -1,8 +1,6 @@
 <?php
-/*
- * To change this license header, choose License Headers in Project Properties.
- * To change this template file, choose Tools | Templates
- * and open the template in the editor.
+/**
+ * @author Patryk Radziszewski <pradziszewski@netis.pl>
  */
 ?>
 <table class="table table-striped table-bordered">
@@ -23,7 +21,6 @@
                 continue;
             }
             $first  = ($i % 3 === 1);
-            $second = ($i % 3 === 2);
             $third  = ($i % 3 === 0);
             $i++;
             ?>

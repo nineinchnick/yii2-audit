@@ -11,11 +11,10 @@ use yii\base\Controller;
 use yii\filters\AccessControl;
 use Yii;
 use nineinchnick\audit\models\AuditForm;
+use yii\base\InvalidConfigException;
 
 class AuditController extends Controller
 {
-
-    public $notDisplayedColumns = ['operation', 'operation_date', 'audit_id'];
 
     public function behaviors()
     {
@@ -48,7 +47,7 @@ class AuditController extends Controller
             $previousModel = null;
             foreach ($dataProvider->getModels() as $model) {
                 $auditId             = $model['audit_id'];
-                $model               = $this->unsetNotDisplayedColumns($model);
+                $model               = $this->unsetNotDisplayedColumns($model, $modelForm->table);
                 $arrayDiff[$auditId] = $this->createDiff($model, $modelForm, $previousModel, $auditId);
                 $previousModel       = $model;
             }
@@ -57,7 +56,7 @@ class AuditController extends Controller
                     'model'               => $modelForm,
                     'dataProvider'        => $dataProvider,
                     'arrayDiff'           => $arrayDiff,
-                    'notDisplayedColumns' => $this->notDisplayedColumns,
+                    'notDisplayedColumns' => []//$this->module->auditColumns,
         ]);
     }
 
@@ -113,9 +112,24 @@ class AuditController extends Controller
         }
         $arrayDiff = join('; ', array_map(function ($v, $k) {
                     return $k . '=' . $v;
-                }, $diff, array_keys($diff)));
+                }, $diff, $this->getColumnsLabel(array_keys($diff), $modelForm->table)));
 
         return $arrayDiff;
+    }
+
+    public function getColumnsLabel($columns, $table)
+    {
+        if (!isset($this->module->tables[$table]['model'])) {
+            throw new InvalidConfigException(Yii::t('app', 'Table model has to be set in config file'));
+        }
+        $model           = new $this->module->tables[$table]['model'];
+        $attributeLabels = $model->attributeLabels();
+        $columnsLabel    = [];
+        foreach ($columns as $attribute) {
+            $columnsLabel[] = $attributeLabels[$attribute];
+        }
+
+        return $columnsLabel;
     }
 
     /**
@@ -141,7 +155,7 @@ class AuditController extends Controller
         $condition = $this->prepareCondition($modelForm);
         $sql       = "SELECT * FROM audits.{$modelForm->table}" . $condition . " AND audit_id < :auditId ORDER BY audit_id desc";
         $row       = Yii::$app->db->createCommand($sql, ['auditId' => $auditId])->queryOne();
-        return $this->unsetNotDisplayedColumns($row);
+        return $this->unsetNotDisplayedColumns($row, $modelForm->table);
     }
 
     /**
@@ -150,9 +164,10 @@ class AuditController extends Controller
      * @param array $model
      * @return array $model
      */
-    public function unsetNotDisplayedColumns($model)
+    public function unsetNotDisplayedColumns($model, $table)
     {
-        foreach ($this->notDisplayedColumns as $column) {
+        $notDisplayedColumns = array_merge($this->module->auditColumns, $this->module->tables[$table]['notDisplayedColumns']);
+        foreach ($notDisplayedColumns as $column) {
             if (isset($model[$column])) {
                 unset($model[$column]);
             }
