@@ -9,18 +9,20 @@ use yii\widgets\ActiveForm;
 use yii\widgets\ListView;
 ?>
 <?php $form = ActiveForm::begin(['method' => 'GET']); ?>
-<?= $form->field($model, 'table')->dropDownList(array_merge(['0' => Yii::t('app', 'Choose')], $model->getAuditTables())) ?>
+<?= \nineinchnick\audit\models\AuditForm::renderRow($this, $model, $form, [$fields], Yii::$app->request->getIsAjax() ? 12 : 6); ?>
 
 <?= Html::submitButton(Yii::t('app', 'Search'), ['class' => 'btn btn-success']); ?>
 
 <?php if ($dataProvider): ?>
-    <?= ListView::widget([
+    <?=
+
+    ListView::widget([
         'dataProvider' => $dataProvider,
         'itemView'     => '_list',
         'viewParams'   => [
             'arrayDiff'           => $arrayDiff,
             'notDisplayedColumns' => $notDisplayedColumns,
-            'table' => $model->table,
+            'table'               => $model->table,
         ],
     ]);
     ?>

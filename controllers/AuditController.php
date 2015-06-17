@@ -52,9 +52,12 @@ class AuditController extends Controller
      */
     public function actionIndex()
     {
-        $modelForm    = new AuditForm;
+        $modelForm    = $this->createAuditForm();
+        $b            = new AuditForm;
+        $b->addFormValidators($modelForm);
         $dataProvider = null;
         $arrayDiff    = [];
+//        $modelForm->generateFilterFields();
         if ($modelForm->load(Yii::$app->request->get()) && $modelForm->validate()) {
             $this->setCurrentModel($modelForm->table);
             $this->notDisplayedColumns = array_merge($this->module->auditColumns, $this->module->tables[$modelForm->table]['notDisplayedColumns']);
@@ -72,7 +75,8 @@ class AuditController extends Controller
                     'model'               => $modelForm,
                     'dataProvider'        => $dataProvider,
                     'arrayDiff'           => $arrayDiff,
-                    'notDisplayedColumns' => []//$this->module->auditColumns,
+                    'fields'              => $b->getFormFields($modelForm),
+                    'notDisplayedColumns' => $this->notDisplayedColumns,
         ]);
     }
 
@@ -208,12 +212,19 @@ class AuditController extends Controller
     /**
      * Prepare where condition
      * 
+     * @param \yii\db\Query $query
      * @param yii\base\Model $modelForm
      * @return string
      */
     public function prepareCondition(&$query, $modelForm)
     {
-        return ' WHERE 1=1';
+        foreach ($modelForm->attributes() as $attribute) {
+            if ($attribute === 'table' || is_null($modelForm[$attribute])) {
+                continue;
+            }
+            $filterConfig = Yii::$app->controller->module->filters[$attribute];
+            $query->andWhere("{$filterConfig['attribute']} {$filterConfig['criteria']['operator']} :{$attribute}", [$attribute => $modelForm[$attribute]]);
+        }
     }
 
     /**
@@ -227,7 +238,7 @@ class AuditController extends Controller
     {
         $query     = new \yii\db\Query;
         $this->prepareCondition($query, $modelForm);
-        $query->where('audit_id < :auditId', ['auditId' => $auditId]);
+        $query->andWhere('audit_id < :auditId', ['auditId' => $auditId]);
         $query->orderBy('audit_id desc');
         $columns   = $this->getRelations($query, $modelForm->table);
         $columns[] = 'audit.*';
@@ -250,6 +261,11 @@ class AuditController extends Controller
             }
         }
         return $model;
+    }
+
+    public function createAuditForm()
+    {
+        return new \yii\base\DynamicModel(array_merge(['table'], array_keys(Yii::$app->controller->module->filters)));
     }
 
 }
