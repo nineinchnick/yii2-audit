@@ -49,57 +49,67 @@ public function behaviors()
 
 ~~~
 
+# Sample configuration
+
+~~~php
+'audit'      => [
+    'class'   => 'nineinchnick\audit\Module',
+    'tables'  => [
+        'orders' => [
+            'model'         => 'netis\orders\models\Order',
+            'hiddenColumns' => ['id', 'created_on', 'author_id'],
+            'updateSkip'    => ['updated_on', 'editor_id'],
+            'relations'     => [
+                'editor' => [
+                    'type'                 => 'LEFT JOIN',
+                    'table'                => '{{%users}}',
+                    'on'                   => 'editor_id = u.id',
+                    'alias'                => 'u',
+                    'representive_columns' => 'username',
+                    'label'                => Yii::t('models', 'Editor'),
+                ],
+            ]
+        ],
+    ],
+    'filters' => [
+        'dateFrom' => [
+            'format'      => 'date',
+            'attribute'   => 'operation_date',
+            'widgetClass' => 'omnilight\widgets\DatePicker',
+            'options'     => ['class' => 'form-control'],
+            'dateFormat'  => 'yyyy-MM-dd',
+            'rules'       => [
+                [
+                    'validator' => 'date',
+                    'options'   => ['format' => 'Y-m-d'],
+                ]
+            ],
+            'criteria'    => [
+                'operator' => '>=',
+            ],
+        ],
+        'dateTo'   => [
+            'format'      => 'date',
+            'attribute'   => 'operation_date',
+            'widgetClass' => 'omnilight\widgets\DatePicker',
+            'options'     => ['class' => 'form-control'],
+            'dateFormat'  => 'yyyy-MM-dd',
+            'rules'       => [
+                [
+                    'validator' => 'date',
+                    'options'   => ['format' => 'Y-m-d'],
+                ]
+            ],
+            'criteria'    => [
+                'operator' => '<=',
+            ],
+        ],
+    ],
+],
+~~~
+
 # References
 
 * https://github.com/airblade/paper_trail
 * http://en.wikipedia.org/wiki/Slowly_changing_dimension
 * http://en.wikipedia.org/wiki/Change_data_capture
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-               'table' => [
-                    'format'    => 'list',
-                    'attribute' => 'table',
-                    'items'     => [
-                        'class'  => 'nineinchnick\audit\models\AuditForm',
-                        'method' => 'getAuditTables'
-                    ],
-                    'rules'     => [
-                        [
-                            'validator' => 'required',
-                            'options'   => [],
-                        ],
-                        [
-                            'validator' => [
-                                'class' => 'nineinchnick\audit\models\AuditForm',
-                                'method' => 'checkTableExists',
-                            ],
-                            'options'   => ['option' => 'test'],
-                        ]
-                    ]
-                ]

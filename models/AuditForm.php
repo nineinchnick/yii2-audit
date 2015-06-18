@@ -2,7 +2,8 @@
 
 /**
  * Active form to manage display audits
- * @author <pradziszewski@netis.pl>
+ * 
+ * @author Patryk Radziszewski <pradziszewski@netis.pl>
  */
 
 namespace nineinchnick\audit\models;
@@ -13,19 +14,26 @@ use Yii;
 class AuditForm extends Model
 {
 
+    /**
+     * Creates validation rules for $model property
+     * 
+     * @param \yii\base\DynamicModel $model
+     */
     public function addFormValidators(&$model)
     {
+        //add validators for basic table filter
         $model->addRule(['table'], 'required');
         $model->addRule(['table'], function() use ($model) {
             return $this->checkTableExists($model);
         });
+        //add validators declared in config file
         foreach (Yii::$app->controller->module->filters as $property => $params) {
             $model->addRule($property, 'default');
             if (!isset($params['rules'])) {
                 continue;
             }
             foreach ($params['rules'] as $rule) {
-                $options   = isset($rule['options']) ? $rule['options'] : [];
+                $options = isset($rule['options']) ? $rule['options'] : [];
                 $validator = $rule['validator'];
                 if (is_string($validator)) {
                     $model->addRule($property, $validator, $options);
@@ -46,10 +54,10 @@ class AuditForm extends Model
     public static function getAuditTables()
     {
         $connection = Yii::$app->db;
-        $schema     = $connection->schema;
-        $tables     = $schema->getTableNames('audits');
-        $map        = [];
-        $map[]      = Yii::t('app', 'Choose');
+        $schema = $connection->schema;
+        $tables = $schema->getTableNames('audits');
+        $map = [];
+        $map[] = Yii::t('app', 'Choose');
         foreach ($tables as $table) {
             $map[$table] = $table;
         }
@@ -64,20 +72,21 @@ class AuditForm extends Model
     public function checkTableExists($model)
     {
         if (!in_array($model->table, $this->getAuditTables())) {
-            $model->addError('table', Yii::t('app', 'You entered an invalid table name.'));
+            $model->addError('table', Yii::t('app', "You've entered an invalid table name."));
             return false;
         }
         return true;
     }
 
     /**
-     * @param \yii\web\View $view
+     * Renders form field
+     * 
      * @param \yii\db\ActiveRecord $model
      * @param \yii\widgets\ActiveForm $form
      * @param string $name
      * @param array $data
      */
-    public static function renderControlGroup($view, $model, $form, $name, $data)
+    public static function renderControlGroup($model, $form, $name, $data)
     {
         if (isset($data['model'])) {
             $model = $data['model'];
@@ -116,7 +125,7 @@ class AuditForm extends Model
         if (empty($fields)) {
             return;
         }
-        $oneColumn   = count($fields) == 1;
+        $oneColumn = count($fields) == 1;
         echo $oneColumn ? '' : '<div class="row">';
         $columnWidth = ceil($topColumnWidth / count($fields));
         foreach ($fields as $name => $column) {
@@ -124,13 +133,13 @@ class AuditForm extends Model
             if (is_string($column)) {
                 echo $column;
             } elseif (!is_numeric($name) && isset($column['attribute'])) {
-                static::renderControlGroup($view, $model, $form, $name, $column);
+                static::renderControlGroup($model, $form, $name, $column);
             } else {
                 foreach ($column as $name2 => $row) {
                     if (is_string($row)) {
                         echo $row;
                     } elseif (!is_numeric($name2) && isset($row['attribute'])) {
-                        static::renderControlGroup($view, $model, $form, $name2, $row);
+                        static::renderControlGroup($model, $form, $name2, $row);
                     } else {
                         static::renderRow($view, $model, $form, $row);
                     }
@@ -143,6 +152,7 @@ class AuditForm extends Model
 
     /**
      * Retrieves form fields configuration.
+     * 
      * @param \yii\base\Model $model
      * @param bool $multiple true for multiple values inputs, usually used for search forms
      * @return array form fields
@@ -151,9 +161,9 @@ class AuditForm extends Model
     {
         $formFields[] = [
             'table' => [
-                'attribute'  => 'table',
+                'attribute' => 'table',
                 'formMethod' => 'dropDownList',
-                'arguments'  => [
+                'arguments' => [
                     'items' => call_user_func(['nineinchnick\audit\models\AuditForm', 'getAuditTables'])
                 ],
             ]
@@ -165,14 +175,10 @@ class AuditForm extends Model
     }
 
     /**
-     * @param array $formFields
      * @param \yii\db\ActiveRecord $model
-     * @param string $attribute
-     * @param array $dbColumns
-     * @param array $formats
-     * @param bool $multiple true for multiple values inputs, usually used for search forms
+     * @param string $propety
+     * @param array $params
      * @return array
-     * @throws InvalidConfigException
      */
     protected static function addFormField($model, $propety, $params)
     {
@@ -185,27 +191,35 @@ class AuditForm extends Model
             case 'datetime':
             case 'date':
                 $field['widgetClass'] = $params['widgetClass'];
-                $field['options']     = [
-                    'model'     => $model,
+                $field['options'] = [
+                    'model' => $model,
                     'attribute' => $params['attribute'],
-                    'options'   => $params['options'],
+                    'options' => $params['options'],
                     'dateFormat' => $params['dateFormat'],
                 ];
                 break;
             case 'list':
-                $field['formMethod']  = 'dropDownList';
-                $items                = self::prepareItems($params['items']);
-                $field['arguments']   = ['items' => $items];
+                $field['formMethod'] = 'dropDownList';
+                $items = self::prepareItems($params['items']);
+                $field['arguments'] = ['items' => $items];
                 break;
             default:
             case 'text':
-                $field['formMethod']  = 'textInput';
+                $field['formMethod'] = 'textInput';
                 break;
         }
         $formFields[$propety] = $field;
         return $formFields;
     }
 
+    /**
+     * Prepares items list to 'dropDownList' field. 
+     * $param could be an array of items or an array of class and method name which generates list
+     * 
+     * @param array $items
+     * @return array
+     * @throws InvalidConfigException
+     */
     public static function prepareItems($items)
     {
         if (!is_array($items)) {

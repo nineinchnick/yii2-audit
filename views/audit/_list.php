@@ -1,7 +1,11 @@
 <?php
+
 /**
  * @author Patryk Radziszewski <pradziszewski@netis.pl>
  */
+use yii\helpers\Html;
+use yii\widgets\ActiveForm;
+use yii\helpers\Url;
 ?>
 <table class="table table-striped table-bordered">
     <thead>
@@ -17,7 +21,7 @@
         ?>
         <?php foreach ($model as $column => $value): ?>
             <?php
-            if (in_array($column, Yii::$app->controller->notDisplayedColumns)) {
+            if (in_array($column, Yii::$app->controller->hiddenColumns)) {
                 continue;
             }
             $first = ($i % 3 === 1);
@@ -31,5 +35,8 @@
     <?php endforeach; ?>
 </tbody>
 </table>
-
-
+<?php ActiveForm::begin(['action' => Url::toRoute('restore')]) ?>
+<?= Html::hiddenInput('audit_id', $model['audit_id']) ?>
+<?= Html::hiddenInput('table', $table) ?>
+<?= Html::submitButton(Yii::t('app', 'Restore'), ['class' => 'btn btn-success', 'data-confirm' => Yii::t('app', 'Are you sure to restore this record?')]); ?>
+<?php ActiveForm::end() ?>
