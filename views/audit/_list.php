@@ -34,9 +34,15 @@ use yii\helpers\Url;
         <?= ($third) ? "</tr>" : '' ?>
     <?php endforeach; ?>
 </tbody>
+<tfoot>
+    <tr>
+        <td colspan="9">
+            <?php ActiveForm::begin(['action' => Url::toRoute('restore')]) ?>
+            <?= Html::hiddenInput('audit_id', $model['audit_id']) ?>
+            <?= Html::hiddenInput('table', $table) ?>
+            <?= Html::submitButton(Yii::t('app', 'Restore'), ['class' => 'btn btn-success', 'data-confirm' => Yii::t('app', 'Are you sure to restore this record?')]); ?>
+            <?php ActiveForm::end() ?>
+        </td>
+    </tr>
+</tfoot>
 </table>
-<?php ActiveForm::begin(['action' => Url::toRoute('restore')]) ?>
-<?= Html::hiddenInput('audit_id', $model['audit_id']) ?>
-<?= Html::hiddenInput('table', $table) ?>
-<?= Html::submitButton(Yii::t('app', 'Restore'), ['class' => 'btn btn-success', 'data-confirm' => Yii::t('app', 'Are you sure to restore this record?')]); ?>
-<?php ActiveForm::end() ?>
