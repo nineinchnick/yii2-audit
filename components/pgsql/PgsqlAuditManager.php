@@ -77,7 +77,7 @@ class PgsqlAuditManager extends Object implements BackendAuditManagerInterface
             $schemaName = 'public';
         }
         $utilityKeys = <<<SQL
-CREATE OR REPLACE FUNCTION json_object_delete_keys(_json json, VARIADIC _keys TEXT[]) RETURNS json AS \\\$BODY$
+CREATE OR REPLACE FUNCTION {$schemaName}.json_object_delete_keys(_json json, VARIADIC _keys TEXT[]) RETURNS json AS \\\$BODY$
 SELECT json_object_agg(key, value) AS json
 FROM json_each(_json)
 WHERE key != ALL (_keys)
@@ -87,7 +87,7 @@ IMMUTABLE STRICT
 SQL;
 
         $utilityValues = <<<SQL
-CREATE OR REPLACE FUNCTION json_object_delete_values(_json json, _values json) RETURNS json AS \\\$BODY$
+CREATE OR REPLACE FUNCTION {$schemaName}.json_object_delete_values(_json json, _values json) RETURNS json AS \\\$BODY$
 SELECT json_object_agg(a.key, a.value) AS json
 FROM json_each_text(_json) a
 JOIN json_each_text(_values) b ON a.key = b.key AND a.value != b.value
@@ -146,15 +146,15 @@ BEGIN
 
     IF (TG_OP = 'UPDATE' AND TG_LEVEL = 'ROW') THEN
         audit_row.row_data = row_to_json(OLD)::jsonb;
-        audit_row.changed_fields = json_object_delete_keys(json_object_delete_values(row_to_json(NEW), audit_row.row_data::json), VARIADIC excluded_cols)::jsonb;
+        audit_row.changed_fields = {$schemaName}.json_object_delete_keys({$schemaName}.json_object_delete_values(row_to_json(NEW), audit_row.row_data::json), VARIADIC excluded_cols)::jsonb;
         IF audit_row.changed_fields IS NULL THEN
             -- All changed fields are ignored. Skip this update.
             RETURN NULL;
         END IF;
     ELSIF (TG_OP = 'DELETE' AND TG_LEVEL = 'ROW') THEN
-        audit_row.row_data = json_object_delete_keys(row_to_json(OLD), VARIADIC excluded_cols)::jsonb;
+        audit_row.row_data = {$schemaName}.json_object_delete_keys(row_to_json(OLD), VARIADIC excluded_cols)::jsonb;
     ELSIF (TG_OP = 'INSERT' AND TG_LEVEL = 'ROW') THEN
-        audit_row.row_data = json_object_delete_keys(row_to_json(NEW), VARIADIC excluded_cols)::jsonb;
+        audit_row.row_data = {$schemaName}.json_object_delete_keys(row_to_json(NEW), VARIADIC excluded_cols)::jsonb;
     ELSIF (TG_LEVEL = 'STATEMENT' AND TG_OP IN ('INSERT','UPDATE','DELETE','TRUNCATE')) THEN
         audit_row.statement_only = TRUE;
     ELSE
