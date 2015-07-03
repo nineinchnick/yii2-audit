@@ -187,8 +187,8 @@ SQL;
             ],
             'down' => [
                 $schemaName.'log_action()' => "DROP FUNCTION {$schemaName}.log_action()",
-                $schemaName.'json_object_delete_values()' => "DROP FUNCTION {$schemaName}.log_action()",
-                $schemaName.'json_object_delete_keys()' => "DROP FUNCTION {$schemaName}.log_action()",
+                $schemaName.'json_object_delete_values()' => "DROP FUNCTION {$schemaName}.json_object_delete_values()",
+                $schemaName.'json_object_delete_keys()' => "DROP FUNCTION {$schemaName}.json_object_delete_keys()",
             ],
         ];
     }
@@ -209,19 +209,29 @@ CREATE TRIGGER log_action_row_trigger AFTER INSERT OR UPDATE OR DELETE ON {$tabl
   FOR EACH ROW EXECUTE PROCEDURE {$schemaName}.log_action();
 SQL;
         $stmtTriggerTemplate = <<<SQL
-CREATE TRIGGER log_action_row_trigger AFTER INSERT OR UPDATE OR DELETE ON {$tableName}
+CREATE TRIGGER log_action_stmt_trigger AFTER INSERT OR UPDATE OR DELETE ON {$tableName}
   FOR EACH STATEMENT EXECUTE PROCEDURE {$schemaName}.log_action();
 SQL;
         return [
             'exists' => (new Query())
                     ->select('tgname')
-                    ->from('pg_trigger')
-                    ->where('tgname=:value', [':value' => 'log_action_row_trigger'])
+                    ->from('pg_trigger t')
+                    ->innerJoin('pg_class c', 'c.oid = t.tgrelid')
+                    ->innerJoin('pg_namespace n', 'n.oid = c.relnamespace')
+                    ->where('n.nspname || \'.\' || c.relname = :table AND tgname=:value', [
+                        ':table' => $tableName,
+                        ':value' => 'log_action_row_trigger'
+                    ])
                     ->exists($this->db)
                 && (new Query())
                     ->select('tgname')
-                    ->from('pg_trigger')
-                    ->where('tgname=:value', [':value' => 'log_action_stmt_trigger'])
+                    ->from('pg_trigger t')
+                    ->innerJoin('pg_class c', 'c.oid = t.tgrelid')
+                    ->innerJoin('pg_namespace n', 'n.oid = c.relnamespace')
+                    ->where('n.nspname || \'.\' || c.relname = :table AND tgname=:value', [
+                        ':table' => $tableName,
+                        ':value' => 'log_action_stmt_trigger'
+                    ])
                     ->exists($this->db),
             'up' => [
                 'log_action_row_trigger' => $rowTriggerTemplate,
@@ -355,7 +365,7 @@ SQL;
             }
         }
 
-        $tableTemplate = $this->tableTemplate($model->getTableSchema(), $auditTableName, $auditSchema);
+        $tableTemplate = $this->tableTemplate($auditTableName, $auditSchema);
         $queryBuilder = $this->db->getQueryBuilder();
         if (!$tableTemplate['exists']) {
             if ($direction == 'up') {
@@ -378,12 +388,13 @@ SQL;
             }
         }
 
-        $procTemplate = $this->procTemplate($model->getTableSchema()->fullName, $auditSchema, $auditTableName);
+        $procTemplate = $this->procTemplate($auditSchema, $auditTableName);
         if (!$procTemplate['exists']) {
             foreach ($procTemplate[$direction] as $query) {
                 $commands[] = $this->db->createCommand($query);
             }
         }
+
         $triggerTemplate = $this->triggerTemplate($model->getTableSchema()->fullName, $auditSchema);
         if (!$triggerTemplate['exists']) {
             foreach ($triggerTemplate[$direction] as $query) {

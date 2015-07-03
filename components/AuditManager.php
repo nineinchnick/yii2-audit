@@ -27,10 +27,6 @@ class AuditManager extends Object
      * @var string name of the audit schema, where all audit related objects are stored
      */
     public $auditSchema = 'audits';
-    /**
-     * @var string suffix appended to the audit table names to distinct them from tracked tables
-     */
-    public $auditSuffix = '_audit';
     public $schemaMap = [
         'pgsql' => 'nineinchnick\audit\components\pgsql\PgsqlAuditManager',
     ];
@@ -68,7 +64,6 @@ class AuditManager extends Object
             : $this->schemaMap[$driver];
         $config['db'] = $this->db;
         $config['auditSchema'] = $this->auditSchema;
-        $config['auditSuffix'] = $this->auditSuffix;
 
         return $this->backendAuditManager = \Yii::createObject($config);
     }
