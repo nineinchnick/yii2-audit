@@ -122,7 +122,7 @@ BEGIN
         NULL::text,             -- application_name
         NULL::inet,             -- client_addr
         NULL::integer,          -- client_port
-        current_query(),        -- top-level query or queries (if multistatement) from client
+        NULL::text,             -- top-level query or queries (if multistatement) from client
         TG_OP,                  -- action_type
         NULL::jsonb,            -- row_data
         NULL::jsonb,            -- changed_fields
@@ -130,7 +130,7 @@ BEGIN
     );
 
     IF TG_ARGV[0]::boolean IS NOT DISTINCT FROM FALSE THEN
-        audit_row.query = NULL;
+        audit_row.query = current_query();
     END IF;
 
     IF TG_ARGV[1] IS NOT NULL THEN
