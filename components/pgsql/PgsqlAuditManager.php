@@ -12,7 +12,6 @@ use yii\base\Exception;
 use yii\base\Object;
 use yii\db\ActiveRecord;
 use yii\db\Query;
-use yii\db\TableSchema;
 
 class PgsqlAuditManager extends Object implements BackendAuditManagerInterface
 {
@@ -22,14 +21,12 @@ class PgsqlAuditManager extends Object implements BackendAuditManagerInterface
      * when managing audits.
      */
     public $db = 'db';
+
     /**
      * @var string name of the audit schema, where all audit related objects are stored
      */
     public $auditSchema = 'audits';
-    /**
-     * @var string suffix appended to the audit table names to distinct them from tracked tables
-     */
-    public $auditSuffix = '_audit';
+
     /**
      * Returns two queries, to create and destroy the audits schema.
      * @param string $schemaName
@@ -39,9 +36,9 @@ class PgsqlAuditManager extends Object implements BackendAuditManagerInterface
     {
         return [
             'exists' => (new Query())
-                ->select('typname')
-                ->from('pg_type')
-                ->where('typname=:value', [':value' => 'operation'])
+                ->select('nspname')
+                ->from('pg_namespace')
+                ->where('nspname = :value', [':value' => $schemaName])
                 ->exists($this->db),
             'up' => "CREATE SCHEMA $schemaName",
             'down' => "DROP SCHEMA $schemaName",
@@ -49,11 +46,11 @@ class PgsqlAuditManager extends Object implements BackendAuditManagerInterface
     }
 
     /**
-     * Returns two queries, to create and destroy the operation db type.
+     * Returns two queries, to create and destroy the action db type.
      * @param string $schemaName if null, defaults to 'public'
      * @return array with three keys: exists(boolean), up(string) and down(string)
      */
-    public function operationTemplate($schemaName = null)
+    public function actionTypeTemplate($schemaName = null)
     {
         if ($schemaName === null) {
             $schemaName = 'public';
@@ -62,85 +59,177 @@ class PgsqlAuditManager extends Object implements BackendAuditManagerInterface
             'exists' => (new Query())
                 ->select('typname')
                 ->from('pg_type')
-                ->where('typname=:value', [':value' => 'operation'])->exists($this->db),
-            'up' => "CREATE TYPE $schemaName.operation AS ENUM ('INSERT', 'SELECT', 'UPDATE', 'DELETE')",
-            'down' => "DROP TYPE $schemaName.operation",
+                ->where('typname=:value', [':value' => 'action_type'])->exists($this->db),
+            'up' => "CREATE TYPE $schemaName.action_type AS ENUM ('INSERT', 'SELECT', 'UPDATE', 'DELETE', 'TRUNCATE')",
+            'down' => "DROP TYPE $schemaName.action_type",
+        ];
+    }
+
+    /**
+     * Returns two queries, to create and destroy the db proc.
+     * @param string $schemaName if null, defaults to 'public'
+     * @param string $auditTableName
+     * @return array with three keys: exists(boolean), up(array of strings) and down(array of strings)
+     */
+    public function procTemplate($schemaName, $auditTableName)
+    {
+        if ($schemaName === null) {
+            $schemaName = 'public';
+        }
+        $utilityKeys = <<<SQL
+CREATE OR REPLACE FUNCTION json_object_delete_keys(_json json, VARIADIC _keys TEXT[]) RETURNS json AS \\\$BODY$
+SELECT json_object_agg(key, value) AS json
+FROM json_each(_json)
+WHERE key != ALL (_keys)
+\\\$BODY$
+LANGUAGE sql
+IMMUTABLE STRICT
+SQL;
+
+        $utilityValues = <<<SQL
+CREATE OR REPLACE FUNCTION json_object_delete_values(_json json, _values json) RETURNS json AS \\\$BODY$
+SELECT json_object_agg(a.key, a.value) AS json
+FROM json_each_text(_json) a
+JOIN json_each_text(_values) b ON a.key = b.key AND a.value != b.value
+\\\$BODY$
+LANGUAGE sql
+IMMUTABLE STRICT
+SQL;
+        $functionTemplate = <<<SQL
+CREATE OR REPLACE FUNCTION {$schemaName}.log_action() RETURNS trigger AS \\\$BODY$
+DECLARE
+    audit_row $schemaName.$auditTableName;
+    include_values boolean;
+    log_diffs boolean;
+    h_old jsonb;
+    h_new jsonb;
+    excluded_cols text[] = ARRAY[]::text[];
+BEGIN
+    IF TG_WHEN <> 'AFTER' THEN
+        RAISE EXCEPTION '$schemaName.log_action() may only run as an AFTER trigger';
+    END IF;
+
+    audit_row = ROW(
+        nextval('$schemaName.{$auditTableName}_action_id_seq'), -- action_id
+        TG_TABLE_SCHEMA::text,  -- schema_name
+        TG_TABLE_NAME::text,    -- table_name
+        TG_RELID,               -- relation OID for much quicker searches
+        current_timestamp,      -- transaction_date
+        statement_timestamp(),  -- statement_date
+        clock_timestamp(),      -- action_date
+        txid_current(),         -- transaction_id
+        NULL::text,             -- session_user_name
+        NULL::text,             -- application_name
+        NULL::inet,             -- client_addr
+        NULL::integer,          -- client_port
+        current_query(),        -- top-level query or queries (if multistatement) from client
+        TG_OP,                  -- action_type
+        NULL::jsonb,            -- row_data
+        NULL::jsonb,            -- changed_fields
+        FALSE                   -- statement_only
+    );
+
+    IF TG_ARGV[0]::boolean IS NOT DISTINCT FROM FALSE THEN
+        audit_row.query = NULL;
+    END IF;
+
+    IF TG_ARGV[1] IS NOT NULL THEN
+        excluded_cols = TG_ARGV[1]::text[];
+    END IF;
+
+    IF TG_ARGV[2]::boolean IS NOT DISTINCT FROM FALSE THEN
+        audit_row.session_user_name = session_user::text;
+        audit_row.application_name = current_settings('application_name');
+        audit_row.client_addr = inet_client_addr();
+        audit_row.client_port = inet_client_port();
+    END IF;
+
+    IF (TG_OP = 'UPDATE' AND TG_LEVEL = 'ROW') THEN
+        audit_row.row_data = row_to_json(OLD)::jsonb;
+        audit_row.changed_fields = json_object_delete_keys(json_object_delete_values(row_to_json(NEW), audit_row.row_data::json), VARIADIC excluded_cols)::jsonb;
+        IF audit_row.changed_fields IS NULL THEN
+            -- All changed fields are ignored. Skip this update.
+            RETURN NULL;
+        END IF;
+    ELSIF (TG_OP = 'DELETE' AND TG_LEVEL = 'ROW') THEN
+        audit_row.row_data = json_object_delete_keys(row_to_json(OLD), VARIADIC excluded_cols)::jsonb;
+    ELSIF (TG_OP = 'INSERT' AND TG_LEVEL = 'ROW') THEN
+        audit_row.row_data = json_object_delete_keys(row_to_json(NEW), VARIADIC excluded_cols)::jsonb;
+    ELSIF (TG_LEVEL = 'STATEMENT' AND TG_OP IN ('INSERT','UPDATE','DELETE','TRUNCATE')) THEN
+        audit_row.statement_only = TRUE;
+    ELSE
+        RAISE EXCEPTION '[$schemaName.log_action] - Trigger func added as trigger for unhandled case: %, %', TG_OP, TG_LEVEL;
+        RETURN NULL;
+    END IF;
+    INSERT INTO $schemaName.$auditTableName VALUES (audit_row.*);
+    RETURN NULL;
+END;
+\\\$BODY$
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SQL;
+        return [
+            'exists' => (new Query())
+                    ->select('proname')->from('pg_proc')
+                    ->where('proname=:value', [':value' => 'json_object_delete_keys'])
+                    ->exists($this->db)
+                && (new Query())
+                    ->select('proname')->from('pg_proc')
+                    ->where('proname=:value', [':value' => 'json_object_delete_values'])
+                    ->exists($this->db)
+                && (new Query())
+                    ->select('proname')->from('pg_proc')
+                    ->where('proname=:value', [':value' => 'log_action'])
+                    ->exists($this->db),
+            'up' => [
+                $schemaName.'json_object_delete_keys()' => $utilityKeys,
+                $schemaName.'json_object_delete_values()' => $utilityValues,
+                $schemaName.'log_action()' => $functionTemplate,
+            ],
+            'down' => [
+                $schemaName.'log_action()' => "DROP FUNCTION {$schemaName}.log_action()",
+                $schemaName.'json_object_delete_values()' => "DROP FUNCTION {$schemaName}.log_action()",
+                $schemaName.'json_object_delete_keys()' => "DROP FUNCTION {$schemaName}.log_action()",
+            ],
         ];
     }
 
     /**
      * Returns two queries, to create and destroy the db trigger.
      * @param string $tableName name of the tracked table
-     * @param string $auditTableName name of the audit table to store row versions
      * @param string $schemaName if null, defaults to 'public'
      * @return array with three keys: exists(boolean), up(array of strings) and down(array of strings)
      */
-    public function triggerTemplate($tableName, $auditTableName, $schemaName = null)
+    public function triggerTemplate($tableName, $schemaName)
     {
         if ($schemaName === null) {
             $schemaName = 'public';
         }
-        $triggerName = $auditTableName;
-        $procName = $auditTableName.'_process';
-        $triggerTemplate = <<<SQL
-CREATE TRIGGER {$triggerName} AFTER INSERT OR UPDATE OR DELETE ON {$tableName}
-  FOR EACH ROW EXECUTE PROCEDURE {$schemaName}.{$procName}();
+        $rowTriggerTemplate = <<<SQL
+CREATE TRIGGER log_action_row_trigger AFTER INSERT OR UPDATE OR DELETE ON {$tableName}
+  FOR EACH ROW EXECUTE PROCEDURE {$schemaName}.log_action();
 SQL;
-        $functionTemplate = <<<SQL
-CREATE OR REPLACE FUNCTION {$schemaName}.{$procName}()
-  RETURNS trigger AS
-\\\$BODY$
-BEGIN
-    IF (TG_OP = 'UPDATE') THEN
-        INSERT INTO {$schemaName}.{$auditTableName}
-        SELECT 'UPDATE', now(), nextval('{$schemaName}.{$auditTableName}_audit_id_seq'::regclass), NEW.*;
-        RETURN NEW;
-    ELSIF (TG_OP = 'DELETE') THEN
-        INSERT INTO {$schemaName}.{$auditTableName}
-        SELECT 'DELETE', now(), nextval('{$schemaName}.{$auditTableName}_audit_id_seq'::regclass), OLD.*;
-        RETURN OLD;
-    ELSIF (TG_OP = 'INSERT') THEN
-        INSERT INTO {$schemaName}.{$auditTableName}
-        SELECT 'INSERT', now(), nextval('{$schemaName}.{$auditTableName}_audit_id_seq'::regclass), NEW.*;
-        RETURN NEW;
-    ELSE
-        RAISE WARNING '[{$schemaName}.{$auditTableName}] - Other action occurred: %, at %',TG_OP,now();
-        RETURN NULL;
-    END IF;
-END
-\\\$BODY$
-  LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+        $stmtTriggerTemplate = <<<SQL
+CREATE TRIGGER log_action_row_trigger AFTER INSERT OR UPDATE OR DELETE ON {$tableName}
+  FOR EACH STATEMENT EXECUTE PROCEDURE {$schemaName}.log_action();
 SQL;
-        /*
-EXCEPTION
-    WHEN data_exception THEN
-        RAISE WARNING '[{$schemaName}.{$auditTableName}] - ERROR [DATA EXCEPTION] - SQLSTATE: %, SQLERRM: %',SQLSTATE,SQLERRM;
-        RETURN NULL;
-    WHEN unique_violation THEN
-        RAISE WARNING '[{$schemaName}.{$auditTableName}] - ERROR [UNIQUE] - SQLSTATE: %, SQLERRM: %',SQLSTATE,SQLERRM;
-        RETURN NULL;
-    WHEN OTHERS THEN
-        RAISE WARNING '[{$schemaName}.{$auditTableName}] - ERROR [OTHER] - SQLSTATE: %, SQLERRM: %',SQLSTATE,SQLERRM;
-        RETURN NULL;
-         */
         return [
             'exists' => (new Query())
                     ->select('tgname')
                     ->from('pg_trigger')
-                    ->where('tgname=:value', [':value' => $triggerName])
+                    ->where('tgname=:value', [':value' => 'log_action_row_trigger'])
                     ->exists($this->db)
                 && (new Query())
-                    ->select('proname')
-                    ->from('pg_proc')
-                    ->where('proname=:value', [':value' => $procName])
+                    ->select('tgname')
+                    ->from('pg_trigger')
+                    ->where('tgname=:value', [':value' => 'log_action_stmt_trigger'])
                     ->exists($this->db),
             'up' => [
-                $schemaName.$procName.'()' => $functionTemplate,
-                $triggerName => $triggerTemplate,
+                'log_action_row_trigger' => $rowTriggerTemplate,
+                'log_action_stmt_trigger' => $stmtTriggerTemplate,
             ],
             'down' => [
-                $schemaName.$procName.'()' => "DROP FUNCTION {$schemaName}.{$procName}()",
-                $triggerName => "DROP TRIGGER {$triggerName} ON {$tableName}",
+                'log_action_stmt_trigger' => "DROP TRIGGER log_action_stmt_trigger ON {$tableName}",
+                'log_action_row_trigger' => "DROP TRIGGER log_action_row_trigger ON {$tableName}",
             ],
         ];
     }
@@ -148,68 +237,43 @@ EXCEPTION
     /**
      * Returns an array with columns list for the audit table that stores row version.
      * If the table already exists, also returns current columns for comparison.
-     * @param TableSchema $table     the tracked table
      * @param string $auditTableName name of the audit table to store row versions
      * @param string $schemaName     if null, defaults to 'public'
      * @return array with three keys: exists(boolean), columns(array of strings) and currentColumns(array of strings)
      * @throws Exception
      */
-    public function tableTemplate(TableSchema $table, $auditTableName, $schemaName = null)
+    public function tableTemplate($auditTableName, $schemaName = null)
     {
         if ($schemaName === null) {
             $schemaName = 'public';
         }
         $columns = [
-            'operation' => "$schemaName.operation NOT NULL",
-            'operation_date' => 'timestamp NOT NULL',
-            'audit_id'=>'serial NOT NULL PRIMARY KEY',
+            'action_id'         => 'bigserial NOT NULL PRIMARY KEY',
+            'schema_name'       => 'text NOT NULL',
+            'table_name'        => 'text NOT NULL',
+            'relation_id'       => 'oid NOT NULL',
+            'transaction_date'  => 'timestamp with time zone NOT NULL',
+            'statement_date'    => 'timestamp with time zone NOT NULL',
+            'action_date'       => 'timestamp with time zone NOT NULL',
+            'transaction_id'    => 'bigint',
+            'session_user_name' => 'text',
+            'application_name'  => 'text',
+            'client_addr'       => 'inet',
+            'client_port'       => 'integer',
+            'query'             => 'text',
+            'action_type'       => "$schemaName.action_type NOT NULL",
+            'row_data'          => 'jsonb',
+            'changed_fields'    => 'jsonb',
+            'statement_only'    => 'boolean NOT NULL DEFAULT FALSE',
         ];
-        foreach ($table->columns as $name => $column) {
-            if (isset($columns[$name])) {
-                throw new Exception("Cannot create audit table template: duplicate column name $name.");
-            }
-            $columns[$name] = $column->dbType;
-        }
-        $auditTable = $this->db->schema->getTableSchema("$schemaName.$auditTableName");
         return [
-            'exists' => $auditTable !== null,
+            'exists' => $this->db->schema->getTableSchema("$schemaName.$auditTableName") !== null,
             'columns' => $columns,
-            'currentColumns' => $auditTable !== null ? $auditTable->columns : [],
+            'indexes' => [
+                'schema_name, table_name', 'relation_id', 'statement_date', 'action_type',
+                'row_data' => 'USING GIN (row_data jsonb_path_ops)',
+            ],
         ];
-    }
-
-    /**
-     * Compares the main and audit table columns and produces a list of columns to add, alter or drop.
-     * @param array $columns
-     * @param array $currentColumns
-     * @return array up/down keys as arrays with three keys: add(array of strings),
-     * alter(array of strings) and drop(array of strings)
-     */
-    public function tablePatch($columns, $currentColumns)
-    {
-        $result = [
-            'up' => ['add' => [], 'alter' => [], 'drop' => []],
-            'down' => ['add' => [], 'alter' => [], 'drop' => []],
-        ];
-        foreach ($columns as $name => $columnType) {
-            if (isset($currentColumns[$name])) {
-                if ($name != 'operation' && $name != 'operation_date' && $name != 'audit_id'
-                    && $columnType != $currentColumns[$name]->dbType
-                ) {
-                    $result['up']['alter'][$name] = $columnType;
-                    $result['down']['alter'][$name] = $currentColumns[$name]->dbType;
-                }
-                unset($currentColumns[$name]);
-            } else {
-                $result['up']['add'][$name] = $columnType;
-                $result['down']['add'][$name] = false;
-            }
-        }
-        foreach ($currentColumns as $name => $column) {
-            $result['up']['drop'][$name] = true;
-            $result['down']['drop'][$name] = $column->dbType;
-        }
-        return $result;
     }
 
     /**
@@ -218,13 +282,17 @@ EXCEPTION
     public function checkGeneral()
     {
         $result = [];
-        $schemaTemplate = $this->schemaTemplate('audits');
+        $schemaTemplate = $this->schemaTemplate($this->auditSchema);
         if (!$schemaTemplate['exists']) {
-            $result[] = 'Missing db schema: audits\n';
+            $result[] = "Missing db schema: {$this->auditSchema}\n";
         }
-        $operationTemplate = $this->operationTemplate('audits');
-        if (!$operationTemplate['exists']) {
-            $result[] = 'Missing db operator: operator\n';
+        $actionTypeTemplate = $this->actionTypeTemplate($this->auditSchema);
+        if (!$actionTypeTemplate['exists']) {
+            $result[] = 'Missing db type: action_type\n';
+        }
+        $procTemplate = $this->procTemplate($this->auditSchema, 'logged_actions');
+        if (!$procTemplate['exists']) {
+            $result[] = 'Missing db proc: log_action\n';
         }
         return $result;
     }
@@ -243,29 +311,17 @@ EXCEPTION
         }
 
         $auditTableName = $behavior->auditTableName;
-        if ($this->db->getTableSchema($auditTableName) === null) {
-            return [
-                'enabled' => false,
-                'valid' => null,
-            ];
-        }
 
         if (($pos=strpos($auditTableName, '.')) !== false) {
             $auditSchema = substr($auditTableName, 0, $pos);
-            $auditTableName = substr($auditTableName, $pos + 1);
         } else {
             $auditSchema = null;
         }
-        $tableTemplate = $this->tableTemplate($model->getTableSchema(), $auditTableName, $auditSchema);
-        $tablePatch = !$tableTemplate['exists']
-            ? null : $this->tablePatch($tableTemplate['columns'], $tableTemplate['currentColumns']);
-        $tableValid = $tableTemplate['exists'] && empty($tablePatch['up']['add'])
-            && empty($tablePatch['up']['alter']) && empty($tablePatch['up']['drop']);
-        $triggerTemplate = $this->triggerTemplate($model->getTableSchema()->name, $auditTableName, $auditSchema);
+        $triggerTemplate = $this->triggerTemplate($model->getTableSchema()->name, $auditSchema);
 
         return [
             'enabled' => true,
-            'valid' => $tableValid && $triggerTemplate['exists'],
+            'valid' => $triggerTemplate['exists'],
         ];
     }
 
@@ -277,62 +333,58 @@ EXCEPTION
      */
     public function getDbCommands(ActiveRecord $model, $direction = 'up')
     {
-        $commands = [];
-
-        if ($direction == 'up') {
-            // don't drop schema and operator, since other objects could be left there
-            $schemaTemplate = $this->schemaTemplate('audits');
-            if (!$schemaTemplate['exists']) {
-                $commands[] = $this->db->createCommand($schemaTemplate[$direction]);
-            }
-            $operationTemplate = $this->operationTemplate('audits');
-            if (!$operationTemplate['exists']) {
-                $commands[] = $this->db->createCommand($operationTemplate[$direction]);
-            }
-        }
-
         $auditTableName = $this->getBehavior($model)->auditTableName;
         if (($pos=strpos($auditTableName, '.')) !== false) {
             $auditSchema = substr($auditTableName, 0, $pos);
             $auditTableName = substr($auditTableName, $pos + 1);
         } else {
-            $auditSchema = null;
+            $auditSchema = 'public';
+        }
+
+        $commands = [];
+
+        if ($direction == 'up') {
+            // don't drop schema and operator, since other objects could be left there
+            $schemaTemplate = $this->schemaTemplate($auditSchema);
+            if (!$schemaTemplate['exists']) {
+                $commands[] = $this->db->createCommand($schemaTemplate[$direction]);
+            }
+            $actionTypeTemplate = $this->actionTypeTemplate($auditSchema);
+            if (!$actionTypeTemplate['exists']) {
+                $commands[] = $this->db->createCommand($actionTypeTemplate[$direction]);
+            }
         }
 
         $tableTemplate = $this->tableTemplate($model->getTableSchema(), $auditTableName, $auditSchema);
         $queryBuilder = $this->db->getQueryBuilder();
-        if ($tableTemplate['exists']) {
-            $tablePatch = $this->tablePatch($tableTemplate['columns'], $tableTemplate['currentColumns']);
-            foreach ($tablePatch[$direction]['add'] as $name => $type) {
-                if ($type === false) {
-                    $query = $queryBuilder->dropColumn($auditTableName, $name);
-                } else {
-                    $query = $queryBuilder->addColumn($auditTableName, $name, $type);
-                }
-                $commands[] = $this->db->createCommand($query);
-            }
-            foreach ($tablePatch[$direction]['alter'] as $name => $type) {
-                $query = $queryBuilder->alterColumn($auditTableName, $name, $type);
-                $commands[] = $this->db->createCommand($query);
-            }
-            foreach ($tablePatch[$direction]['drop'] as $name => $type) {
-                if ($type === true) {
-                    $query = $queryBuilder->dropColumn($auditTableName, $name);
-                } else {
-                    $query = $queryBuilder->addColumn($auditTableName, $name, $type);
-                }
-                $commands[] = $this->db->createCommand($query);
-            }
-        } else {
+        if (!$tableTemplate['exists']) {
             if ($direction == 'up') {
                 $query = $queryBuilder->createTable("$auditSchema.$auditTableName", $tableTemplate['columns']);
             } else {
                 $query = $queryBuilder->dropTable("$auditSchema.$auditTableName");
             }
             $commands[] = $this->db->createCommand($query);
+            foreach ($tableTemplate['indexes'] as $columns => $type) {
+                if (is_numeric($columns)) {
+                    $columns = $type;
+                    $type = null;
+                }
+                if ($type === null) {
+                    $query = "CREATE INDEX ON $auditSchema.$auditTableName ($columns)";
+                } else {
+                    $query = "CREATE INDEX ON $auditSchema.$auditTableName $type";
+                }
+                $commands[] = $this->db->createCommand($query);
+            }
         }
 
-        $triggerTemplate = $this->triggerTemplate($model->getTableSchema()->fullName, $auditTableName, $auditSchema);
+        $procTemplate = $this->procTemplate($model->getTableSchema()->fullName, $auditSchema, $auditTableName);
+        if (!$procTemplate['exists']) {
+            foreach ($procTemplate[$direction] as $query) {
+                $commands[] = $this->db->createCommand($query);
+            }
+        }
+        $triggerTemplate = $this->triggerTemplate($model->getTableSchema()->fullName, $auditSchema);
         if (!$triggerTemplate['exists']) {
             foreach ($triggerTemplate[$direction] as $query) {
                 $commands[] = $this->db->createCommand($query);

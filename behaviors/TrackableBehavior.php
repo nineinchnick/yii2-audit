@@ -52,31 +52,15 @@ class TrackableBehavior extends Behavior
     const MODE_TRIGGER = 'trigger';
     const MODE_EVENT = 'event';
 
-    const STORE_RECORD = 1;
-    const STORE_LOG = 2;
-    const STORE_BOTH = 3;
-
     /**
      * @var string what method is used to record changes, either
      * TrackableBehavior::MODE_TRIGGER or TrackableBehavior::MODE_EVENT.
      */
     public $mode = self::MODE_TRIGGER;
     /**
-     * @var integer how the change is stored, as a full record version
-     * (TrackableBehavior::STORE_RECORD) or a attribute/value log entry
-     * (TrackableBehavior::STORE_LOG). Can be both, since a full record
-     * is easier to reconstruct a specific version and log entries
-     * allow to search for specific changes faster.
+     * @var string Change log table name, may contain schema name.
      */
-    public $store = self::STORE_BOTH;
-    /**
-     * @var string Audit table name, may contain schema name. Required when storing full records.
-     */
-    public $auditTableName;
-    /**
-     * @var string Change log table name, may contain schema name. Required when storing change logs.
-     */
-    public $logTableName = 'change_logs';
+    public $auditTableName = 'audits.logged_actions';
 
 
     /**
@@ -85,10 +69,6 @@ class TrackableBehavior extends Behavior
     public function init()
     {
         parent::init();
-        if ($this->store && self::STORE_RECORD && $this->auditTableName === null) {
-            throw new InvalidConfigException('TrackableBehavior requires auditTableName when storing full records, '
-                . 'configured for '.get_class($this->owner).'.');
-        }
         if ($this->mode === self::MODE_EVENT) {
             throw new Exception('TrackableBehavior does not yet support events.');
         }

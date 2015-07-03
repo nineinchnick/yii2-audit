@@ -13,12 +13,6 @@ Provides:
 * a command to manage and verify audit database objects
 * a controller action with a view to view model change history
 
-# Architecture
-
-* a library with an interface for a schema generator, basically a set of sql templates
-* a library to process existing db structures and generate migrations, that is sql scripts
-* make a framework specific (behaviors) layer to support more features
-
 # Installation
 
 Install via composer:
@@ -44,8 +38,6 @@ public function behaviors()
         [
             'class' => TrackableBehavior::className(),
             'mode' => TrackableBehavior::MODE_TRIGGER,
-            'store' => TrackableBehavior::STORE_RECORD | TrackableBehavior::STORE_LOG,
-            // TrackableBehavior::STORE_BOTH can also be used instead
         ],
     ];
 }
@@ -69,7 +61,7 @@ First, configure the controller in your console config:
 Then run the command:
 
 ~~~bash
-./yii audit migration --modelName=AR_MODEL_CLASS
+./yii audit/migration --modelName=AR_MODEL_CLASS
 ~~~
 
 where `AR_MODEL_CLASS` is your model class name.
