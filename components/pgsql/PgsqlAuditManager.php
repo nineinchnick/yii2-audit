@@ -238,7 +238,7 @@ EXCEPTION
     public function checkModel(ActiveRecord $model)
     {
         /** @var TrackableBehavior $behavior */
-        if (($behavior = $model->getBehavior('audit')) === null) {
+        if (($behavior = $this->getBehavior($model)) === null) {
             return null;
         }
 
@@ -291,7 +291,7 @@ EXCEPTION
             }
         }
 
-        $auditTableName = $model->getBehavior('trackable')->auditTableName;
+        $auditTableName = $this->getBehavior($model)->auditTableName;
         if (($pos=strpos($auditTableName, '.')) !== false) {
             $auditSchema = substr($auditTableName, 0, $pos);
             $auditTableName = substr($auditTableName, $pos + 1);
@@ -339,5 +339,19 @@ EXCEPTION
             }
         }
         return $direction == 'down' ? array_reverse($commands) : $commands;
+    }
+
+    /**
+     * @param ActiveRecord $model
+     * @return TrackableBehavior
+     */
+    private function getBehavior(ActiveRecord $model)
+    {
+        foreach ($model->getBehaviors() as $behavior) {
+            if ($behavior instanceof TrackableBehavior) {
+                return $behavior;
+            }
+        }
+        return null;
     }
 }

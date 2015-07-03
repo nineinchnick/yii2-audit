@@ -27,6 +27,8 @@ Install via composer:
 composer require nineinchnick/yii2-audit
 ~~~
 
+## Recording changes
+
 Attach the behavior to the model, after the Blameable and Timestamp behaviors:
 
 ~~~php
@@ -43,10 +45,46 @@ public function behaviors()
             'class' => TrackableBehavior::className(),
             'mode' => TrackableBehavior::MODE_TRIGGER,
             'store' => TrackableBehavior::STORE_RECORD | TrackableBehavior::STORE_LOG,
+            // TrackableBehavior::STORE_BOTH can also be used instead
         ],
     ];
 }
 
+~~~
+
+If using trigger mode, run a command that generates migrations,
+which would create or update database objects like triggers and audit tables.
+
+First, configure the controller in your console config:
+
+~~~php
+    'controllerMap' => [
+        'audit' => [
+            'class' => 'nineinchnick\audit\console\AuditController',
+        ],
+    ],
+    // .... rest of configuration
+~~~
+
+Then run the command:
+
+~~~bash
+./yii audit migration --modelName=AR_MODEL_CLASS
+~~~
+
+where `AR_MODEL_CLASS` is your model class name.
+
+## Displaying changes
+
+To view the change history, use the provided module in your app config:
+
+~~~php
+    'modules' => [
+        'audit' => [
+            'class' => 'nineinchnick\audit\Module',
+        ],
+        // .... other modules
+    ],
 ~~~
 
 # Sample configuration
@@ -111,5 +149,6 @@ public function behaviors()
 # References
 
 * https://github.com/airblade/paper_trail
+* https://github.com/2ndQuadrant/audit-trigger
 * http://en.wikipedia.org/wiki/Slowly_changing_dimension
 * http://en.wikipedia.org/wiki/Change_data_capture

@@ -10,13 +10,9 @@ use hanneskod\classtools\Iterator\ClassIterator;
 use nineinchnick\audit\behaviors\TrackableBehavior;
 use ReflectionClass;
 use Symfony\Component\Finder\Finder;
-use yii\base\Exception;
 use yii\base\NotSupportedException;
 use yii\base\Object;
-use yii\db\ActiveRecord;
 use yii\db\Connection;
-use yii\db\Query;
-use yii\db\TableSchema;
 use yii\di\Instance;
 
 class AuditManager extends Object
