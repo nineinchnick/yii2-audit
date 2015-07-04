@@ -13,12 +13,6 @@ Provides:
 * a command to manage and verify audit database objects
 * a controller action with a view to view model change history
 
-# Architecture
-
-* a library with an interface for a schema generator, basically a set of sql templates
-* a library to process existing db structures and generate migrations, that is sql scripts
-* make a framework specific (behaviors) layer to support more features
-
 # Installation
 
 Install via composer:
@@ -26,6 +20,8 @@ Install via composer:
 ~~~bash
 composer require nineinchnick/yii2-audit
 ~~~
+
+## Recording changes
 
 Attach the behavior to the model, after the Blameable and Timestamp behaviors:
 
@@ -42,15 +38,109 @@ public function behaviors()
         [
             'class' => TrackableBehavior::className(),
             'mode' => TrackableBehavior::MODE_TRIGGER,
-            'store' => TrackableBehavior::STORE_RECORD | TrackableBehavior::STORE_LOG,
         ],
     ];
 }
 
 ~~~
 
+If using trigger mode, run a command that generates migrations,
+which would create or update database objects like triggers and audit tables.
+
+First, configure the controller in your console config:
+
+~~~php
+    'controllerMap' => [
+        'audit' => [
+            'class' => 'nineinchnick\audit\console\AuditController',
+        ],
+    ],
+    // .... rest of configuration
+~~~
+
+Then run the command:
+
+~~~bash
+./yii audit/migration --modelName=AR_MODEL_CLASS
+~~~
+
+where `AR_MODEL_CLASS` is your model class name.
+
+## Displaying changes
+
+To view the change history, use the provided module in your app config:
+
+~~~php
+    'modules' => [
+        'audit' => [
+            'class' => 'nineinchnick\audit\Module',
+        ],
+        // .... other modules
+    ],
+~~~
+
+# Sample configuration
+
+~~~php
+'audit'      => [
+    'class'   => 'nineinchnick\audit\Module',
+    'tables'  => [
+        'orders' => [
+            'model'         => 'netis\orders\models\Order',
+            'hiddenColumns' => ['id', 'created_on', 'author_id'],
+            'updateSkip'    => ['updated_on', 'editor_id'],
+            'relations'     => [
+                'editor' => [
+                    'type'                 => 'LEFT JOIN',
+                    'table'                => '{{%users}}',
+                    'on'                   => 'editor_id = u.id',
+                    'alias'                => 'u',
+                    'representive_columns' => 'username',
+                    'label'                => Yii::t('models', 'Editor'),
+                ],
+            ]
+        ],
+    ],
+    'filters' => [
+        'dateFrom' => [
+            'format'      => 'date',
+            'attribute'   => 'operation_date',
+            'widgetClass' => 'omnilight\widgets\DatePicker',
+            'options'     => ['class' => 'form-control'],
+            'dateFormat'  => 'yyyy-MM-dd',
+            'rules'       => [
+                [
+                    'validator' => 'date',
+                    'options'   => ['format' => 'Y-m-d'],
+                ]
+            ],
+            'criteria'    => [
+                'operator' => '>=',
+            ],
+        ],
+        'dateTo'   => [
+            'format'      => 'date',
+            'attribute'   => 'operation_date',
+            'widgetClass' => 'omnilight\widgets\DatePicker',
+            'options'     => ['class' => 'form-control'],
+            'dateFormat'  => 'yyyy-MM-dd',
+            'rules'       => [
+                [
+                    'validator' => 'date',
+                    'options'   => ['format' => 'Y-m-d'],
+                ]
+            ],
+            'criteria'    => [
+                'operator' => '<=',
+            ],
+        ],
+    ],
+],
+~~~
+
 # References
 
 * https://github.com/airblade/paper_trail
+* https://github.com/2ndQuadrant/audit-trigger
 * http://en.wikipedia.org/wiki/Slowly_changing_dimension
 * http://en.wikipedia.org/wiki/Change_data_capture

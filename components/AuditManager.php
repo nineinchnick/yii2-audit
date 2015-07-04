@@ -10,13 +10,9 @@ use hanneskod\classtools\Iterator\ClassIterator;
 use nineinchnick\audit\behaviors\TrackableBehavior;
 use ReflectionClass;
 use Symfony\Component\Finder\Finder;
-use yii\base\Exception;
 use yii\base\NotSupportedException;
 use yii\base\Object;
-use yii\db\ActiveRecord;
 use yii\db\Connection;
-use yii\db\Query;
-use yii\db\TableSchema;
 use yii\di\Instance;
 
 class AuditManager extends Object
@@ -31,10 +27,6 @@ class AuditManager extends Object
      * @var string name of the audit schema, where all audit related objects are stored
      */
     public $auditSchema = 'audits';
-    /**
-     * @var string suffix appended to the audit table names to distinct them from tracked tables
-     */
-    public $auditSuffix = '_audit';
     public $schemaMap = [
         'pgsql' => 'nineinchnick\audit\components\pgsql\PgsqlAuditManager',
     ];
@@ -72,7 +64,6 @@ class AuditManager extends Object
             : $this->schemaMap[$driver];
         $config['db'] = $this->db;
         $config['auditSchema'] = $this->auditSchema;
-        $config['auditSuffic'] = $this->auditSuffix;
 
         return $this->backendAuditManager = \Yii::createObject($config);
     }
