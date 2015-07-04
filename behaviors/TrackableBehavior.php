@@ -10,8 +10,8 @@ use Yii;
 use yii\base\Behavior;
 use yii\base\Event;
 use yii\base\Exception;
-use yii\base\InvalidConfigException;
 use yii\db\ActiveRecord;
+use yii\db\Expression;
 use yii\db\Query;
 
 /**
@@ -61,6 +61,10 @@ class TrackableBehavior extends Behavior
      * @var string Change log table name, may contain schema name.
      */
     public $auditTableName = 'audits.logged_actions';
+    /**
+     * @var string Changeset table name, may contain schema name but must be the same as in $auditTableName.
+     */
+    public $changesetTableName = 'audits.changesets';
 
 
     /**
@@ -81,13 +85,13 @@ class TrackableBehavior extends Behavior
     {
         return $this->mode !== self::MODE_EVENT ? [] : [
             ActiveRecord::EVENT_BEFORE_INSERT => function ($event) {
-                return $this->recordChange($event, ActiveRecord::EVENT_BEFORE_INSERT);
+                $this->logAction($event, ActiveRecord::EVENT_BEFORE_INSERT);
             },
             ActiveRecord::EVENT_BEFORE_UPDATE => function ($event) {
-                return $this->recordChange($event, ActiveRecord::EVENT_BEFORE_UPDATE);
+                $this->logAction($event, ActiveRecord::EVENT_BEFORE_UPDATE);
             },
             ActiveRecord::EVENT_BEFORE_DELETE => function ($event) {
-                return $this->recordChange($event, ActiveRecord::EVENT_BEFORE_DELETE);
+                $this->logAction($event, ActiveRecord::EVENT_BEFORE_DELETE);
             },
         ];
     }
@@ -96,9 +100,68 @@ class TrackableBehavior extends Behavior
      * @param Event $event
      * @param string $type of on ActiveRecord::EVENT_BEFORE_* constants
      */
-    public function recordChange($event, $type)
+    public function logAction($event, $type)
     {
-        throw new Exception('Not implemented');
+        /** @var ActiveRecord $model */
+        $model = $this->owner;
+        $actionTypeMap = [
+            ActiveRecord::EVENT_BEFORE_INSERT => 'INSERT',
+            ActiveRecord::EVENT_BEFORE_UPDATE => 'UPDATE',
+            ActiveRecord::EVENT_BEFORE_DELETE => 'DELETE',
+        ];
+        $audit_row = [
+            'schema_name' => $model->getTableSchema()->schemaName,
+            'table_name' => $model->getTableSchema()->name,
+            'action_date' => date('Y-m-d H:i:s'),
+            'action_type' => $actionTypeMap[$type],
+            'row_data' => json_encode($model->getAttributes()),
+            'changed_fields' => null,
+        ];
+
+        if ($type === ActiveRecord::EVENT_BEFORE_UPDATE) {
+            $audit_row['row_data'] = json_encode($model->getAttributes());
+            $audit_row['changed_fields'] = json_encode($model->getDirtyAttributes());
+            if ($audit_row['changed_fields'] === json_encode([])) {
+                return;
+            }
+        } elseif ($type === ActiveRecord::EVENT_BEFORE_DELETE) {
+            $audit_row['row_data'] = $model->getOldAttributes();
+        } elseif ($type === ActiveRecord::EVENT_BEFORE_INSERT) {
+            $audit_row['row_data'] = $model->getAttributes();
+        }
+
+        $model->getDb()->createCommand()->insert($this->auditTableName, $audit_row);
+    }
+
+    /**
+     * Creates a new db audit changeset, which contains metadata
+     * like current user id, request url and client ip address.
+     * @throws \yii\db\Exception
+     */
+    public function beginChangeset()
+    {
+        /** @var ActiveRecord $model */
+        $model = $this->owner;
+        $id = $model->getDb()->getSchema()->insert($this->changesetTableName, [
+            'transaction_id' => new Expression('txid_current()'),
+            'user_id'        => Yii::$app->user->getId(),
+            'session_id'     => Yii::$app->session->getId(),
+            'request_date'   => date('Y-m-d H:i:s'),
+            'request_url'    => Yii::$app->request->getUrl(),
+            'request_addr'   => Yii::$app->request->getUserIP(),
+        ]);
+        $model->getDb()->createCommand('SET LOCAL audit.changeset_id = :id', [':id' => $id])->execute();
+    }
+
+    /**
+     * Ends the current db audit changeset, so following queries wont be included in it.
+     * @throws \yii\db\Exception
+     */
+    public function endChangeset()
+    {
+        /** @var ActiveRecord $model */
+        $model = $this->owner;
+        $model->getDb()->createCommand('SET LOCAL audit.changeset_id = NULL')->execute();
     }
 
     /**
@@ -110,11 +173,12 @@ class TrackableBehavior extends Behavior
         /** @var ActiveRecord $owner */
         $owner = $this->owner;
         $modelClass = get_class($owner);
-        return ActiveRecord::populateRecord(new $modelClass, (new Query())
-            ->select($owner->attributes())
+        $row = (new Query())
+            ->select('row_data')
             ->from($this->auditTableName)
             ->where(array_fill_keys($owner->getDb()->getTableSchema($this->auditTableName)->primaryKey, $version_id))
-            ->one($owner->getDb()));
+            ->one($owner->getDb());
+        return ActiveRecord::populateRecord(new $modelClass, json_decode($row));
     }
 
     /**

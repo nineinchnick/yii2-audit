@@ -9,6 +9,8 @@ namespace nineinchnick\audit\components\pgsql;
 use nineinchnick\audit\behaviors\TrackableBehavior;
 use nineinchnick\audit\components\BackendAuditManagerInterface;
 use yii\base\Exception;
+use yii\base\InvalidCallException;
+use yii\base\InvalidConfigException;
 use yii\base\Object;
 use yii\db\ActiveRecord;
 use yii\db\Query;
@@ -67,11 +69,12 @@ class PgsqlAuditManager extends Object implements BackendAuditManagerInterface
 
     /**
      * Returns two queries, to create and destroy the db proc.
-     * @param string $schemaName if null, defaults to 'public'
      * @param string $auditTableName
+     * @param string $changesetTableName name of the changeset table name to store metadata
+     * @param string $schemaName if null, defaults to 'public'
      * @return array with three keys: exists(boolean), up(array of strings) and down(array of strings)
      */
-    public function procTemplate($schemaName, $auditTableName)
+    public function procTemplate($auditTableName, $changesetTableName = null, $schemaName = null)
     {
         if ($schemaName === null) {
             $schemaName = 'public';
@@ -95,6 +98,7 @@ JOIN json_each_text(_values) b ON a.key = b.key AND a.value != b.value
 LANGUAGE sql
 IMMUTABLE STRICT
 SQL;
+        $metaColumn = $changesetTableName === null ? '' : ",current_settings('audit.changeset_id')";
         $functionTemplate = <<<SQL
 CREATE OR REPLACE FUNCTION {$schemaName}.log_action() RETURNS trigger AS \\\$BODY$
 DECLARE
@@ -110,23 +114,24 @@ BEGIN
     END IF;
 
     audit_row = ROW(
-        nextval('$schemaName.{$auditTableName}_action_id_seq'), -- action_id
-        TG_TABLE_SCHEMA::text,  -- schema_name
-        TG_TABLE_NAME::text,    -- table_name
-        TG_RELID,               -- relation OID for much quicker searches
-        current_timestamp,      -- transaction_date
-        statement_timestamp(),  -- statement_date
-        clock_timestamp(),      -- action_date
-        txid_current(),         -- transaction_id
-        NULL::text,             -- session_user_name
-        NULL::text,             -- application_name
-        NULL::inet,             -- client_addr
-        NULL::integer,          -- client_port
-        NULL::text,             -- top-level query or queries (if multistatement) from client
-        TG_OP,                  -- action_type
-        NULL::jsonb,            -- row_data
-        NULL::jsonb,            -- changed_fields
-        FALSE                   -- statement_only
+        nextval('$schemaName.{$auditTableName}_action_id_seq') -- action_id
+        ,TG_TABLE_SCHEMA::text  -- schema_name
+        ,TG_TABLE_NAME::text    -- table_name
+        ,TG_RELID               -- relation OID for much quicker searches
+        ,current_timestamp      -- transaction_date
+        ,statement_timestamp()  -- statement_date
+        ,clock_timestamp()      -- action_date
+        ,txid_current()         -- transaction_id
+        ,NULL::text             -- session_user_name
+        ,NULL::text             -- application_name
+        ,NULL::inet             -- client_addr
+        ,NULL::integer          -- client_port
+        ,NULL::text             -- top-level query or queries (if multistatement) from client
+        ,TG_OP                  -- action_type
+        ,NULL::jsonb            -- row_data
+        ,NULL::jsonb            -- changed_fields
+        ,FALSE                  -- statement_only
+        {$metaColumn}
     );
 
     IF TG_ARGV[0]::boolean IS NOT DISTINCT FROM FALSE THEN
@@ -248,16 +253,18 @@ SQL;
      * Returns an array with columns list for the audit table that stores row version.
      * If the table already exists, also returns current columns for comparison.
      * @param string $auditTableName name of the audit table to store row versions
+     * @param string $changesetTableName name of the changeset table name to store metadata
      * @param string $schemaName     if null, defaults to 'public'
      * @return array with three keys: exists(boolean), columns(array of strings) and currentColumns(array of strings)
      * @throws Exception
      */
-    public function tableTemplate($auditTableName, $schemaName = null)
+    public function tableTemplate($auditTableName, $changesetTableName = null, $schemaName = null)
     {
         if ($schemaName === null) {
             $schemaName = 'public';
         }
-        $columns = [
+        $result = [];
+        $auditColumns = [
             'action_id'         => 'bigserial NOT NULL PRIMARY KEY',
             'schema_name'       => 'text NOT NULL',
             'table_name'        => 'text NOT NULL',
@@ -276,14 +283,36 @@ SQL;
             'changed_fields'    => 'jsonb',
             'statement_only'    => 'boolean NOT NULL DEFAULT FALSE',
         ];
-        return [
+        if ($changesetTableName !== null) {
+            $auditColumns['changeset_id'] = "integer REFERENCES $schemaName.$changesetTableName (id) ON UPDATE CASCADE ON DELETE CASCADE";
+            $metaColumns = [
+                'id'             => 'serial NOT NULL PRIMARY KEY',
+                'transaction_id' => 'bigint',
+                'user_id'        => 'integer',
+                'session_id'     => 'text',
+                'request_date'   => 'timestamp with time zone NOT NULL',
+                'request_url'    => 'text',
+                'request_addr'   => 'inet',
+            ];
+            $result[] = [
+                'name' => "$schemaName.$changesetTableName",
+                'exists' => $this->db->schema->getTableSchema("$schemaName.$changesetTableName") !== null,
+                'columns' => $metaColumns,
+                'indexes' => [
+                    'transaction_id', 'User_id', 'session_id', 'request_url', 'request_addr',
+                ],
+            ];
+        }
+        $result[] = [
+            'name' => "$schemaName.$auditTableName",
             'exists' => $this->db->schema->getTableSchema("$schemaName.$auditTableName") !== null,
-            'columns' => $columns,
+            'columns' => $auditColumns,
             'indexes' => [
                 'schema_name, table_name', 'relation_id', 'statement_date', 'action_type',
                 'row_data' => 'USING GIN (row_data jsonb_path_ops)',
             ],
         ];
+        return $result;
     }
 
     /**
@@ -300,7 +329,7 @@ SQL;
         if (!$actionTypeTemplate['exists']) {
             $result[] = 'Missing db type: action_type\n';
         }
-        $procTemplate = $this->procTemplate($this->auditSchema, 'logged_actions');
+        $procTemplate = $this->procTemplate('logged_actions', 'changesets', $this->auditSchema);
         if (!$procTemplate['exists']) {
             $result[] = 'Missing db proc: log_action\n';
         }
@@ -344,11 +373,18 @@ SQL;
     public function getDbCommands(ActiveRecord $model, $direction = 'up')
     {
         $auditTableName = $this->getBehavior($model)->auditTableName;
+        $changesetTableName = $this->getBehavior($model)->changesetTableName;
         if (($pos=strpos($auditTableName, '.')) !== false) {
             $auditSchema = substr($auditTableName, 0, $pos);
             $auditTableName = substr($auditTableName, $pos + 1);
         } else {
             $auditSchema = 'public';
+        }
+        if (($pos=strpos($changesetTableName, '.')) !== false) {
+            if (substr($changesetTableName, 0, $pos) !== $auditSchema) {
+                throw new InvalidCallException('Meta and audit tables cannot be in different schemas.');
+            }
+            $changesetTableName = substr($changesetTableName, $pos + 1);
         }
 
         $commands = [];
@@ -365,30 +401,36 @@ SQL;
             }
         }
 
-        $tableTemplate = $this->tableTemplate($auditTableName, $auditSchema);
+        $tableTemplates = $this->tableTemplate($auditTableName, $changesetTableName, $auditSchema);
+        if ($direction == 'down') {
+            $tableTemplates = array_reverse($tableTemplates);
+        }
         $queryBuilder = $this->db->getQueryBuilder();
-        if (!$tableTemplate['exists']) {
-            if ($direction == 'up') {
-                $query = $queryBuilder->createTable("$auditSchema.$auditTableName", $tableTemplate['columns']);
-            } else {
-                $query = $queryBuilder->dropTable("$auditSchema.$auditTableName");
+        foreach ($tableTemplates as $tableTemplate) {
+            if ($tableTemplate['exists']) {
+                continue;
             }
-            $commands[] = $this->db->createCommand($query);
+            if ($direction == 'down') {
+                $commands[] = $this->db->createCommand($queryBuilder->dropTable($tableTemplate['name']));
+                continue;
+            }
+            $query = $queryBuilder->createTable($tableTemplate['name'], $tableTemplate['columns']);
             foreach ($tableTemplate['indexes'] as $columns => $type) {
                 if (is_numeric($columns)) {
                     $columns = $type;
                     $type = null;
                 }
                 if ($type === null) {
-                    $query = "CREATE INDEX ON $auditSchema.$auditTableName ($columns)";
+                    $query = "CREATE INDEX ON {$tableTemplate['name']} ($columns)";
                 } else {
-                    $query = "CREATE INDEX ON $auditSchema.$auditTableName $type";
+                    $query = "CREATE INDEX ON {$tableTemplate['name']} $type";
                 }
                 $commands[] = $this->db->createCommand($query);
             }
+            $commands[] = $this->db->createCommand($query);
         }
 
-        $procTemplate = $this->procTemplate($auditSchema, $auditTableName);
+        $procTemplate = $this->procTemplate($auditTableName, $changesetTableName, $auditSchema);
         if (!$procTemplate['exists']) {
             foreach ($procTemplate[$direction] as $query) {
                 $commands[] = $this->db->createCommand($query);
