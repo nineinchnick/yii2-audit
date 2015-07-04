@@ -98,7 +98,20 @@ JOIN json_each_text(_values) b ON a.key = b.key AND a.value != b.value
 LANGUAGE sql
 IMMUTABLE STRICT
 SQL;
-        $metaColumn = $changesetTableName === null ? '' : ",current_settings('audit.changeset_id')";
+        if ($changesetTableName !== null) {
+            $metaValue  = <<<SQL
+BEGIN
+  SELECT NULLIF(current_setting('audit.changeset_id'), '') INTO audit_row.changeset_id;
+  EXCEPTION
+    WHEN undefined_object THEN audit_row.changeset_id = NULL;
+    WHEN data_exception THEN audit_row.changeset_id = NULL;
+END;
+SQL;
+            $metaColumn = ",NULL";
+        } else {
+            $metaValue  = '';
+            $metaColumn = '';
+        }
         $functionTemplate = <<<SQL
 CREATE OR REPLACE FUNCTION {$schemaName}.log_action() RETURNS trigger AS \\\$BODY$
 DECLARE
@@ -134,6 +147,8 @@ BEGIN
         {$metaColumn}
     );
 
+    $metaValue
+
     IF TG_ARGV[0]::boolean IS NOT DISTINCT FROM FALSE THEN
         audit_row.query = current_query();
     END IF;
@@ -144,7 +159,7 @@ BEGIN
 
     IF TG_ARGV[2]::boolean IS NOT DISTINCT FROM FALSE THEN
         audit_row.session_user_name = session_user::text;
-        audit_row.application_name = current_settings('application_name');
+        audit_row.application_name = current_setting('application_name');
         audit_row.client_addr = inet_client_addr();
         audit_row.client_port = inet_client_port();
     END IF;
@@ -192,8 +207,8 @@ SQL;
             ],
             'down' => [
                 $schemaName.'log_action()' => "DROP FUNCTION {$schemaName}.log_action()",
-                $schemaName.'json_object_delete_values()' => "DROP FUNCTION {$schemaName}.json_object_delete_values()",
-                $schemaName.'json_object_delete_keys()' => "DROP FUNCTION {$schemaName}.json_object_delete_keys()",
+                $schemaName.'json_object_delete_values()' => "DROP FUNCTION {$schemaName}.json_object_delete_values(json, text[])",
+                $schemaName.'json_object_delete_keys()' => "DROP FUNCTION {$schemaName}.json_object_delete_keys(json, json)",
             ],
         ];
     }
@@ -415,6 +430,7 @@ SQL;
                 continue;
             }
             $query = $queryBuilder->createTable($tableTemplate['name'], $tableTemplate['columns']);
+            $commands[] = $this->db->createCommand($query);
             foreach ($tableTemplate['indexes'] as $columns => $type) {
                 if (is_numeric($columns)) {
                     $columns = $type;
@@ -427,7 +443,6 @@ SQL;
                 }
                 $commands[] = $this->db->createCommand($query);
             }
-            $commands[] = $this->db->createCommand($query);
         }
 
         $procTemplate = $this->procTemplate($auditTableName, $changesetTableName, $auditSchema);
