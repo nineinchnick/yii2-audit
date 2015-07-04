@@ -4,7 +4,7 @@
  * @license BSD
  */
 
-namespace nineinchnic\audit\console;
+namespace nineinchnick\audit\console;
 
 use nineinchnick\audit\components\AuditManager;
 use yii\base\Exception;
