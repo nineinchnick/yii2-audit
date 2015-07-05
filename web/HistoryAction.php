@@ -119,7 +119,8 @@ class HistoryAction extends \yii\rest\Action
             },
         ]);
 
-        $mainData = (new Query())
+        $rows = (new Query())
+            ->select(['*', 'COALESCE(a.changeset_id, a.transaction_id, a.action_id) AS id'])
             ->from($behavior->auditTableName.' a')
             ->leftJoin($behavior->changesetTableName.' c', 'c.id = a.changeset_id')
             ->where([
@@ -130,13 +131,27 @@ class HistoryAction extends \yii\rest\Action
                     'IN',
                     ['a.key_type', 'COALESCE(a.changeset_id, a.transaction_id, a.action_id)'],
                     array_map(function ($model) {
-                        return [$model['key_type'], $model['id']];
+                        return [
+                            'a.key_type' => $model['key_type'],
+                            'COALESCE(a.changeset_id, a.transaction_id, a.action_id)' => $model['id'],
+                        ];
                     }, $dataProvider->getModels()),
                 ],
             ])
             ->orderBy('a.action_date')
             ->all($staticModel->getDb());
-        $dataProvider->setModels($mainData);
+        $models = [];
+        foreach ($rows as $row) {
+            if (!isset($models[$row['key_type'] . $row['id']])) {
+                $models[$row['key_type'] . $row['id']] = [
+                    'key_type' => $row['key_type'],
+                    'id' => $row['id'],
+                    'actions' => [],
+                ];
+            }
+            $models[$row['key_type'] . $row['id']]['actions'][] = $row;
+        }
+        $dataProvider->setModels($models);
 
         return $dataProvider;
     }
