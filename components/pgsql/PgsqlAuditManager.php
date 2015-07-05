@@ -207,8 +207,8 @@ SQL;
             ],
             'down' => [
                 $schemaName.'log_action()' => "DROP FUNCTION {$schemaName}.log_action()",
-                $schemaName.'json_object_delete_values()' => "DROP FUNCTION {$schemaName}.json_object_delete_values(json, text[])",
-                $schemaName.'json_object_delete_keys()' => "DROP FUNCTION {$schemaName}.json_object_delete_keys(json, json)",
+                $schemaName.'json_object_delete_values()' => "DROP FUNCTION {$schemaName}.json_object_delete_values(json, json)",
+                $schemaName.'json_object_delete_keys()' => "DROP FUNCTION {$schemaName}.json_object_delete_keys(json, text[])",
             ],
         ];
     }
@@ -417,9 +417,6 @@ SQL;
         }
 
         $tableTemplates = $this->tableTemplate($auditTableName, $changesetTableName, $auditSchema);
-        if ($direction == 'down') {
-            $tableTemplates = array_reverse($tableTemplates);
-        }
         $queryBuilder = $this->db->getQueryBuilder();
         foreach ($tableTemplates as $tableTemplate) {
             if ($tableTemplate['exists']) {
