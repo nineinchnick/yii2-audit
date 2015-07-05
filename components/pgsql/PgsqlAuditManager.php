@@ -387,8 +387,11 @@ SQL;
      */
     public function getDbCommands(ActiveRecord $model, $direction = 'up')
     {
-        $auditTableName = $this->getBehavior($model)->auditTableName;
-        $changesetTableName = $this->getBehavior($model)->changesetTableName;
+        if (($behavior = $this->getBehavior($model)) === null) {
+            throw new InvalidConfigException('Attach the TrackableBehavior to the '.$model::className().' model.');
+        }
+        $auditTableName = $behavior->auditTableName;
+        $changesetTableName = $behavior->changesetTableName;
         if (($pos=strpos($auditTableName, '.')) !== false) {
             $auditSchema = substr($auditTableName, 0, $pos);
             $auditTableName = substr($auditTableName, $pos + 1);
