@@ -145,12 +145,12 @@ class TrackableBehavior extends Behavior
         $id = $model->getDb()->getSchema()->insert($this->changesetTableName, [
             'transaction_id' => new Expression('txid_current()'),
             'user_id'        => Yii::$app->user->getId(),
-            'session_id'     => Yii::$app->session->getId(),
+            'session_id'     => Yii::$app->has('session') ? Yii::$app->session->getId() : null,
             'request_date'   => date('Y-m-d H:i:s'),
-            'request_url'    => Yii::$app->request->getUrl(),
-            'request_addr'   => Yii::$app->request->getUserIP(),
+            'request_url'    => Yii::$app->request instanceof \yii\web\Request ? Yii::$app->request->getUrl() : null,
+            'request_addr'   => Yii::$app->request instanceof \yii\web\Request ? Yii::$app->request->getUserIP() : null,
         ]);
-        $model->getDb()->createCommand('SET LOCAL audit.changeset_id = :id', [':id' => $id])->execute();
+        $model->getDb()->createCommand('SET LOCAL audit.changeset_id = ' . reset($id))->execute();
     }
 
     /**
@@ -161,7 +161,7 @@ class TrackableBehavior extends Behavior
     {
         /** @var ActiveRecord $model */
         $model = $this->owner;
-        $model->getDb()->createCommand('SET LOCAL audit.changeset_id = NULL')->execute();
+        $model->getDb()->createCommand("SET LOCAL audit.changeset_id = ''")->execute();
     }
 
     /**
