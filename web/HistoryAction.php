@@ -6,7 +6,12 @@
 
 namespace nineinchnick\audit\web;
 
+use nineinchnick\audit\behaviors\TrackableBehavior;
 use yii\data\ActiveDataProvider;
+use yii\data\SqlDataProvider;
+use yii\db\ActiveRecord;
+use yii\db\Expression;
+use yii\db\Query;
 
 class HistoryAction extends \yii\rest\Action
 {
@@ -27,42 +32,112 @@ class HistoryAction extends \yii\rest\Action
     /**
      * @var string view name to display model change history
      */
-    public $view;
+    public $viewName = 'history';
 
     /**
      * @return ActiveDataProvider
      */
-    public function run($id = null, $version = null)
+    public function run($id = null)
     {
         $model = $id === null ? null : $this->findModel($id);
         if ($this->checkAccess) {
             call_user_func($this->checkAccess, $this->id, $model);
         }
 
-        //! @todo read entries from logged_actions table, optionally grouped by changesets
+        $dataProvider = $this->prepareDataProvider($model);
 
-        if ($model !== null) {
-            return $this->controller->render($this->view, ['model' => $model]);
+        if (\Yii::$app->response->format === \yii\web\Response::FORMAT_HTML) {
+            return $this->controller->render($this->viewName, [
+                'model' => $model,
+                'dataProvider' => $dataProvider,
+            ]);
         }
-
-        return $this->controller->render($this->view, ['dataProvider' => $this->prepareDataProvider()]);
+        return $dataProvider;
     }
 
     /**
      * Prepares the data provider that should return the requested collection of the models.
+     * @param ActiveRecord $model
      * @return ActiveDataProvider
      */
-    protected function prepareDataProvider()
+    protected function prepareDataProvider($model)
     {
         if ($this->prepareDataProvider !== null) {
             return call_user_func($this->prepareDataProvider, $this);
         }
 
-        /* @var $modelClass \yii\db\BaseActiveRecord */
+        /** @var $modelClass \yii\db\BaseActiveRecord */
         $modelClass = $this->modelClass;
+        /** @var \yii\db\ActiveRecord $staticModel */
+        $staticModel = new $modelClass;
+        /** @var TrackableBehavior $behavior */
+        $behavior = $staticModel->getBehavior('trackable');
 
-        return new ActiveDataProvider([
-            'query' => $modelClass::find(),
+        $keyCondition = '';
+        $params = [];
+        $relations = ["'".$modelClass::getTableSchema()->fullName . "'::regclass::oid"];
+        if ($model !== null) {
+            $keyCondition = "AND a.row_data @> (:key)::jsonb";
+            $params[':key'] = json_encode($model->getPrimaryKey(true));
+            if ($model instanceof \netis\utils\crud\ActiveRecord) {
+                $relations = $model->relations();
+            }
+        } else {
+            if ($staticModel instanceof \netis\utils\crud\ActiveRecord) {
+                $relations = $staticModel->relations();
+            }
+        }
+        $relations = implode(', ', array_map(function ($relationName) use ($staticModel) {
+            /** @var \yii\db\ActiveQuery $relation */
+            $relation = $staticModel->getRelation($relationName);
+            /** @var \yii\db\ActiveRecord $relationClass */
+            $relationClass = $relation->modelClass;
+            return "'".$relationClass::getTableSchema()->fullName . "'::regclass::oid";
+        }, $relations));
+
+        $subquery = (new Query())
+            ->select([
+                'key_type' => 'a.key_type',
+                'id' => 'COALESCE(a.changeset_id, a.transaction_id, a.action_id)',
+            ])
+            ->from($behavior->auditTableName.' a')
+            ->leftJoin($behavior->changesetTableName.' c', 'c.id = a.changeset_id')
+            ->where("a.statement_only = FALSE AND a.relation_id IN ({$relations}) $keyCondition")
+            ->groupBy(['a.key_type', 'COALESCE(a.changeset_id, a.transaction_id, a.action_id)']);
+        $countQuery = clone $subquery;
+        $countQuery->select(['COUNT(DISTINCT ROW(a.key_type, COALESCE(a.changeset_id, a.transaction_id, a.action_id)))']);
+        $countQuery->groupBy([]);
+        $dataProvider = new SqlDataProvider([
+            'sql' => $subquery->createCommand($staticModel->getDb())->getSql(),
+            'params' => $params,
+            'totalCount' => $countQuery->scalar($staticModel->getDb()),
+            'pagination' => [
+                'pageSize' => 20,
+            ],
+            'key' => function ($model) {
+                return $model['key_type'] . $model['id'];
+            },
         ]);
+
+        $mainData = (new Query())
+            ->from($behavior->auditTableName.' a')
+            ->leftJoin($behavior->changesetTableName.' c', 'c.id = a.changeset_id')
+            ->where([
+                'AND',
+                'a.statement_only = FALSE',
+                "(a.key_type != 't' OR a.relation_id IN ({$relations}))",
+                [
+                    'IN',
+                    ['a.key_type', 'COALESCE(a.changeset_id, a.transaction_id, a.action_id)'],
+                    array_map(function ($model) {
+                        return [$model['key_type'], $model['id']];
+                    }, $dataProvider->getModels()),
+                ],
+            ])
+            ->orderBy('a.action_date')
+            ->all($staticModel->getDb());
+        $dataProvider->setModels($mainData);
+
+        return $dataProvider;
     }
 }

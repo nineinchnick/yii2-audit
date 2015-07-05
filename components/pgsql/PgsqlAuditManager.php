@@ -100,18 +100,30 @@ IMMUTABLE STRICT
 SQL;
         if ($changesetTableName !== null) {
             $metaValue  = <<<SQL
-BEGIN
-  SELECT NULLIF(current_setting('audit.changeset_id'), '') INTO audit_row.changeset_id;
-  EXCEPTION
-    WHEN undefined_object THEN audit_row.changeset_id = NULL;
-    WHEN data_exception THEN audit_row.changeset_id = NULL;
-END;
+    BEGIN
+        SELECT NULLIF(current_setting('audit.changeset_id'), '') INTO audit_row.changeset_id;
+        EXCEPTION
+            WHEN undefined_object THEN audit_row.changeset_id = NULL;
+            WHEN data_exception THEN audit_row.changeset_id = NULL;
+    END;
+
+SQL;
+            $metaCase = <<<SQL
+    audit_row.key_type = CASE
+        WHEN audit_row.changeset_id IS NOT NULL THEN 'c'
+        WHEN audit_row.key_type IS NOT NULL THEN 't'
+        ELSE 'a'
+    END;
 
 SQL;
             $metaColumn = ",NULL";
         } else {
             $metaValue  = '';
             $metaColumn = '';
+            $metaCase = <<<SQL
+    audit_row.key_type = CASE WHEN audit_row.transaction_id IS NOT NULL THEN 't' ELSE 'a' END;
+
+SQL;
         }
         $functionTemplate = <<<SQL
 CREATE OR REPLACE FUNCTION {$schemaName}.log_action() RETURNS trigger AS \\\$BODY$
@@ -145,6 +157,7 @@ BEGIN
         ,NULL::jsonb            -- row_data
         ,NULL::jsonb            -- changed_fields
         ,FALSE                  -- statement_only
+        ,NULL                   -- key_type
         {$metaColumn}
     );
 
@@ -164,6 +177,7 @@ BEGIN
     END IF;
 
 $metaValue
+$metaCase
     IF (TG_OP = 'UPDATE' AND TG_LEVEL = 'ROW') THEN
         audit_row.row_data = {$schemaName}.json_object_delete_keys(row_to_json(OLD), VARIADIC excluded_cols)::jsonb;
         audit_row.changed_fields = {$schemaName}.json_object_delete_keys({$schemaName}.json_object_delete_values(row_to_json(NEW), row_to_json(OLD)), VARIADIC excluded_cols)::jsonb;
@@ -297,8 +311,10 @@ SQL;
             'row_data'          => 'jsonb',
             'changed_fields'    => 'jsonb',
             'statement_only'    => 'boolean NOT NULL DEFAULT FALSE',
+            'key_type'          => "char(1) NOT NULL CHECK (key_type IN ('t', 'a'))",
         ];
         if ($changesetTableName !== null) {
+            $auditColumns['key_type'] = "char(1) NOT NULL CHECK (key_type IN ('c', 't', 'a'))";
             $auditColumns['changeset_id'] = "integer REFERENCES $schemaName.$changesetTableName (id) ON UPDATE CASCADE ON DELETE CASCADE";
             $metaColumns = [
                 'id'             => 'serial NOT NULL PRIMARY KEY',
@@ -322,10 +338,13 @@ SQL;
             'name' => "$schemaName.$auditTableName",
             'exists' => $this->db->schema->getTableSchema("$schemaName.$auditTableName") !== null,
             'columns' => $auditColumns,
-            'indexes' => [
-                'schema_name, table_name', 'relation_id', 'statement_date', 'action_type',
+            'indexes' => array_merge([
+                'schema_name, table_name', 'relation_id', 'statement_date',
+                'action_type', 'key_type', 'statement_only',
                 'row_data' => 'USING GIN (row_data jsonb_path_ops)',
-            ],
+            ], $changesetTableName === null ? [] : [
+                'changeset_id',
+            ]),
         ];
         return $result;
     }
