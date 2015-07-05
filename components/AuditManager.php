@@ -100,6 +100,6 @@ class AuditManager extends Object
      */
     public function getDbCommands($modelName, $direction = 'up')
     {
-        return $this->getBackendAuditManager()->getDbCommands(new $modelName, $direction);
+        return $this->getBackendAuditManager()->getDbCommands($modelName === null ? null : new $modelName, $direction);
     }
 }

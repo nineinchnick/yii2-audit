@@ -93,7 +93,7 @@ SQL;
 CREATE OR REPLACE FUNCTION {$schemaName}.json_object_delete_values(_json json, _values json) RETURNS json AS \\\$BODY$
 SELECT json_object_agg(a.key, a.value) AS json
 FROM json_each_text(_json) a
-JOIN json_each_text(_values) b ON a.key = b.key AND a.value != b.value
+JOIN json_each_text(_values) b ON a.key = b.key AND a.value IS DISTINCT FROM b.value
 \\\$BODY$
 LANGUAGE sql
 IMMUTABLE STRICT
@@ -106,6 +106,7 @@ BEGIN
     WHEN undefined_object THEN audit_row.changeset_id = NULL;
     WHEN data_exception THEN audit_row.changeset_id = NULL;
 END;
+
 SQL;
             $metaColumn = ",NULL";
         } else {
@@ -147,9 +148,7 @@ BEGIN
         {$metaColumn}
     );
 
-    $metaValue
-
-    IF TG_ARGV[0]::boolean IS NOT DISTINCT FROM FALSE THEN
+    IF TG_ARGV[0]::boolean IS NOT DISTINCT FROM TRUE THEN
         audit_row.query = current_query();
     END IF;
 
@@ -157,16 +156,17 @@ BEGIN
         excluded_cols = TG_ARGV[1]::text[];
     END IF;
 
-    IF TG_ARGV[2]::boolean IS NOT DISTINCT FROM FALSE THEN
+    IF TG_ARGV[2]::boolean IS NOT DISTINCT FROM TRUE THEN
         audit_row.session_user_name = session_user::text;
         audit_row.application_name = current_setting('application_name');
         audit_row.client_addr = inet_client_addr();
         audit_row.client_port = inet_client_port();
     END IF;
 
+$metaValue
     IF (TG_OP = 'UPDATE' AND TG_LEVEL = 'ROW') THEN
-        audit_row.row_data = row_to_json(OLD)::jsonb;
-        audit_row.changed_fields = {$schemaName}.json_object_delete_keys({$schemaName}.json_object_delete_values(row_to_json(NEW), audit_row.row_data::json), VARIADIC excluded_cols)::jsonb;
+        audit_row.row_data = {$schemaName}.json_object_delete_keys(row_to_json(OLD), VARIADIC excluded_cols)::jsonb;
+        audit_row.changed_fields = {$schemaName}.json_object_delete_keys({$schemaName}.json_object_delete_values(row_to_json(NEW), row_to_json(OLD)), VARIADIC excluded_cols)::jsonb;
         IF audit_row.changed_fields IS NULL THEN
             -- All changed fields are ignored. Skip this update.
             RETURN NULL;
@@ -230,7 +230,7 @@ CREATE TRIGGER log_action_row_trigger AFTER INSERT OR UPDATE OR DELETE ON {$tabl
 SQL;
         $stmtTriggerTemplate = <<<SQL
 CREATE TRIGGER log_action_stmt_trigger AFTER INSERT OR UPDATE OR DELETE ON {$tableName}
-  FOR EACH STATEMENT EXECUTE PROCEDURE {$schemaName}.log_action();
+  FOR EACH STATEMENT EXECUTE PROCEDURE {$schemaName}.log_action(true);
 SQL;
         return [
             'exists' => (new Query())
@@ -384,14 +384,21 @@ SQL;
      * @param ActiveRecord $model
      * @param string $direction
      * @return array
+     * @throws InvalidConfigException
      */
-    public function getDbCommands(ActiveRecord $model, $direction = 'up')
+    public function getDbCommands($model = null, $direction = 'up')
     {
-        if (($behavior = $this->getBehavior($model)) === null) {
-            throw new InvalidConfigException('Attach the TrackableBehavior to the '.$model::className().' model.');
+        if ($model === null) {
+            $auditTableName = 'audits.logged_actions';
+            $changesetTableName = 'audits.changesets';
+        } else {
+            if (($behavior = $this->getBehavior($model)) === null) {
+                throw new InvalidConfigException('Attach the TrackableBehavior to the ' . $model::className()
+                    . ' model.');
+            }
+            $auditTableName = $behavior->auditTableName;
+            $changesetTableName = $behavior->changesetTableName;
         }
-        $auditTableName = $behavior->auditTableName;
-        $changesetTableName = $behavior->changesetTableName;
         if (($pos=strpos($auditTableName, '.')) !== false) {
             $auditSchema = substr($auditTableName, 0, $pos);
             $auditTableName = substr($auditTableName, $pos + 1);
@@ -452,12 +459,15 @@ SQL;
             }
         }
 
-        $triggerTemplate = $this->triggerTemplate($model->getTableSchema()->fullName, $auditSchema);
-        if (!$triggerTemplate['exists']) {
-            foreach ($triggerTemplate[$direction] as $query) {
-                $commands[] = $this->db->createCommand($query);
+        if ($model !== null) {
+            $triggerTemplate = $this->triggerTemplate($model->getTableSchema()->fullName, $auditSchema);
+            if (!$triggerTemplate['exists']) {
+                foreach ($triggerTemplate[$direction] as $query) {
+                    $commands[] = $this->db->createCommand($query);
+                }
             }
         }
+
         return $direction == 'down' ? array_reverse($commands) : $commands;
     }
 

@@ -25,14 +25,9 @@ class HistoryAction extends \yii\rest\Action
      */
     public $prepareDataProvider;
     /**
-     * @var string view name for a single model change history
+     * @var string view name to display model change history
      */
-    public $singleView;
-    /**
-     * @var string view name for a collection of models change history
-     */
-    public $multiView;
-
+    public $view;
 
     /**
      * @return ActiveDataProvider
@@ -44,11 +39,13 @@ class HistoryAction extends \yii\rest\Action
             call_user_func($this->checkAccess, $this->id, $model);
         }
 
+        //! @todo read entries from logged_actions table, optionally grouped by changesets
+
         if ($model !== null) {
-            return $this->controller->render($this->singleView, ['model' => $model]);
+            return $this->controller->render($this->view, ['model' => $model]);
         }
 
-        return $this->controller->render($this->multiView, ['dataProvider' => $this->prepareDataProvider()]);
+        return $this->controller->render($this->view, ['dataProvider' => $this->prepareDataProvider()]);
     }
 
     /**

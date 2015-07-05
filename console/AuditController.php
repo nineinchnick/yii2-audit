@@ -186,7 +186,7 @@ class AuditController extends Controller
      * @return int
      * @throws Exception
      */
-    public function actionMigration($modelName)
+    public function actionMigration($modelName = null)
     {
         $queryTemplate = <<<EOD
         \$query = <<<SQL
@@ -211,9 +211,13 @@ EOD;
             return self::EXIT_CODE_ERROR;
         }
 
-        $parts = explode('\\', $modelName);
-        $modelName = end($parts);
-        $name = 'm'.gmdate('ymd_His').'_audit_'.$modelName;
+
+        $name = 'm'.gmdate('ymd_His').'_audit';
+        if ($modelName !== null) {
+            $parts = explode('\\', $modelName);
+            $modelName = end($parts);
+            $name .= '_' . $modelName;
+        }
         $file = $this->migrationPath . DIRECTORY_SEPARATOR . $name . '.php';
 
         if ($this->confirm("Create new migration '$file'?")) {

@@ -27,5 +27,5 @@ interface BackendAuditManagerInterface
      * @param string $direction
      * @return array
      */
-    public function getDbCommands(ActiveRecord $model, $direction = 'up');
+    public function getDbCommands($model = null, $direction = 'up');
 }
