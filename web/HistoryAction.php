@@ -10,7 +10,6 @@ use nineinchnick\audit\behaviors\TrackableBehavior;
 use yii\data\ActiveDataProvider;
 use yii\data\SqlDataProvider;
 use yii\db\ActiveRecord;
-use yii\db\Expression;
 use yii\db\Query;
 
 class HistoryAction extends \yii\rest\Action
@@ -56,44 +55,25 @@ class HistoryAction extends \yii\rest\Action
     }
 
     /**
-     * Prepares the data provider that should return the requested collection of the models.
      * @param ActiveRecord $model
-     * @return ActiveDataProvider
+     * @param array $relations
+     * @return SqlDataProvider
      */
-    protected function prepareDataProvider($model)
+    private function getKeysDataprovider($model, $relations)
     {
-        if ($this->prepareDataProvider !== null) {
-            return call_user_func($this->prepareDataProvider, $this);
-        }
-
         /** @var $modelClass \yii\db\BaseActiveRecord */
         $modelClass = $this->modelClass;
         /** @var \yii\db\ActiveRecord $staticModel */
         $staticModel = new $modelClass;
         /** @var TrackableBehavior $behavior */
         $behavior = $staticModel->getBehavior('trackable');
-
-        $keyCondition = '';
+        $conditions = ['AND', 'a.statement_only = FALSE', ['IN', '(a.relation_id::regclass::varchar)', $relations]];
         $params = [];
-        $relations = ["'".$modelClass::getTableSchema()->fullName . "'::regclass::oid"];
         if ($model !== null) {
-            $keyCondition = "AND a.row_data @> (:key)::jsonb";
+            $conditions[] = "a.row_data @> (:key)::jsonb";
             $params[':key'] = json_encode($model->getPrimaryKey(true));
-            if ($model instanceof \netis\utils\crud\ActiveRecord) {
-                $relations = $model->relations();
-            }
-        } else {
-            if ($staticModel instanceof \netis\utils\crud\ActiveRecord) {
-                $relations = $staticModel->relations();
-            }
         }
-        $relations = implode(', ', array_map(function ($relationName) use ($staticModel) {
-            /** @var \yii\db\ActiveQuery $relation */
-            $relation = $staticModel->getRelation($relationName);
-            /** @var \yii\db\ActiveRecord $relationClass */
-            $relationClass = $relation->modelClass;
-            return "'".$relationClass::getTableSchema()->fullName . "'::regclass::oid";
-        }, $relations));
+        $relations = implode(',', $relations);
 
         $subquery = (new Query())
             ->select([
@@ -102,14 +82,16 @@ class HistoryAction extends \yii\rest\Action
             ])
             ->from($behavior->auditTableName.' a')
             ->leftJoin($behavior->changesetTableName.' c', 'c.id = a.changeset_id')
-            ->where("a.statement_only = FALSE AND a.relation_id IN ({$relations}) $keyCondition")
+            ->where($conditions)
             ->groupBy(['a.key_type', 'COALESCE(a.changeset_id, a.transaction_id, a.action_id)']);
+        $subquery->addParams($params);
         $countQuery = clone $subquery;
         $countQuery->select(['COUNT(DISTINCT ROW(a.key_type, COALESCE(a.changeset_id, a.transaction_id, a.action_id)))']);
         $countQuery->groupBy([]);
-        $dataProvider = new SqlDataProvider([
-            'sql' => $subquery->createCommand($staticModel->getDb())->getSql(),
-            'params' => $params,
+        $command = $subquery->createCommand($staticModel->getDb());
+        return new SqlDataProvider([
+            'sql' => $command->getSql(),
+            'params' => $command->params,
             'totalCount' => $countQuery->scalar($staticModel->getDb()),
             'pagination' => [
                 'pageSize' => 20,
@@ -118,6 +100,16 @@ class HistoryAction extends \yii\rest\Action
                 return $model['key_type'] . $model['id'];
             },
         ]);
+    }
+
+    private function getChanges($keys, $relations, $tablesMap)
+    {
+        /** @var $modelClass \yii\db\ActiveRecord */
+        $modelClass = $this->modelClass;
+        /** @var \yii\db\ActiveRecord $staticModel */
+        $staticModel = new $modelClass;
+        /** @var TrackableBehavior $behavior */
+        $behavior = $staticModel->getBehavior('trackable');
 
         $rows = (new Query())
             ->select(['*', 'COALESCE(a.changeset_id, a.transaction_id, a.action_id) AS id'])
@@ -126,7 +118,7 @@ class HistoryAction extends \yii\rest\Action
             ->where([
                 'AND',
                 'a.statement_only = FALSE',
-                "(a.key_type != 't' OR a.relation_id IN ({$relations}))",
+                ['OR', "a.key_type != 't'", ['IN', '(a.relation_id::regclass::varchar)', $relations]],
                 [
                     'IN',
                     ['a.key_type', 'COALESCE(a.changeset_id, a.transaction_id, a.action_id)'],
@@ -135,7 +127,7 @@ class HistoryAction extends \yii\rest\Action
                             'a.key_type' => $model['key_type'],
                             'COALESCE(a.changeset_id, a.transaction_id, a.action_id)' => $model['id'],
                         ];
-                    }, $dataProvider->getModels()),
+                    }, $keys),
                 ],
             ])
             ->orderBy('a.action_date')
@@ -149,9 +141,64 @@ class HistoryAction extends \yii\rest\Action
                     'actions' => [],
                 ];
             }
+            $row['row_data'] = (array)json_decode($row['row_data']);
+            $row['changed_fields'] = (array)json_decode($row['changed_fields']);
+            if ($row['request_date'] === null) {
+                $row['request_date'] = $row['action_date'];
+            }
+            if ($row['request_url'] === null) {
+                $row['request_url'] = '<abbr title="Command-line Interpreter">CLI</abbr>';
+            }
+            if (isset($tablesMap[$row['schema_name'] . '.' . $row['table_name']])) {
+                $row['modelClass'] = $tablesMap[$row['schema_name'] . '.' . $row['table_name']];
+                /** @var ActiveRecord $model */
+                $model = new $row['modelClass'];
+                $model::populateRecord($model, $row['row_data']);
+                $row['model'] = $model;
+            }
+            $row['user'] = $row['user_id'] === null ? \Yii::t('app', 'system') : (string)User::findOne($row['user_id']);
+
             $models[$row['key_type'] . $row['id']]['actions'][] = $row;
         }
-        $dataProvider->setModels($models);
+        return $models;
+    }
+
+    /**
+     * Prepares the data provider that should return the requested collection of the models.
+     * @param ActiveRecord $model
+     * @return ActiveDataProvider
+     */
+    protected function prepareDataProvider($model)
+    {
+        if ($this->prepareDataProvider !== null) {
+            return call_user_func($this->prepareDataProvider, $this);
+        }
+
+        /** @var $modelClass \yii\db\ActiveRecord */
+        $modelClass = $this->modelClass;
+        /** @var \yii\db\ActiveRecord $staticModel */
+        $staticModel = new $modelClass;
+
+        $tablesMap = [];
+        $relations = [];
+        $relationNames = [];
+        if ($staticModel instanceof \netis\utils\crud\ActiveRecord) {
+            $relationNames = $staticModel->relations();
+        }
+        foreach ($relationNames as $relationName) {
+            /** @var \yii\db\ActiveQuery $relation */
+            $relation = $staticModel->getRelation($relationName);
+            /** @var \yii\db\ActiveRecord $relationClass */
+            $relationClass = $relation->modelClass;
+            $tablesMap[$relationClass::getTableSchema()->fullName] = $relationClass;
+            $relations[] = $relationClass::getTableSchema()->fullName;
+        }
+
+        $tablesMap[$modelClass::getTableSchema()->fullName] = $modelClass;
+        $relations[] = $modelClass::getTableSchema()->fullName;
+
+        $dataProvider = $this->getKeysDataprovider($model, array_keys($tablesMap));
+        $dataProvider->setModels($this->getChanges($dataProvider->getModels(), array_keys($tablesMap), $tablesMap));
 
         return $dataProvider;
     }
