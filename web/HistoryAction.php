@@ -6,11 +6,12 @@
 
 namespace nineinchnick\audit\web;
 
-use nineinchnick\audit\behaviors\TrackableBehavior;
+use nineinchnick\audit\models\Action;
+use yii\base\Exception;
 use yii\data\ActiveDataProvider;
-use yii\data\SqlDataProvider;
+use yii\data\DataProviderInterface;
+use yii\db\ActiveQuery;
 use yii\db\ActiveRecord;
-use yii\db\Query;
 
 class HistoryAction extends \yii\rest\Action
 {
@@ -54,119 +55,113 @@ class HistoryAction extends \yii\rest\Action
         return $dataProvider;
     }
 
-    /**
-     * @param ActiveRecord $model
-     * @param array $relations
-     * @return SqlDataProvider
-     */
-    private function getKeysDataprovider($model, $relations)
-    {
-        /** @var $modelClass \yii\db\BaseActiveRecord */
-        $modelClass = $this->modelClass;
-        /** @var \yii\db\ActiveRecord $staticModel */
-        $staticModel = new $modelClass;
-        /** @var TrackableBehavior $behavior */
-        $behavior = $staticModel->getBehavior('trackable');
-        $conditions = ['AND', 'a.statement_only = FALSE', ['IN', '(a.relation_id::regclass::varchar)', $relations]];
-        $params = [];
-        if ($model !== null) {
-            $conditions[] = "a.row_data @> (:key)::jsonb";
-            $params[':key'] = json_encode($model->getPrimaryKey(true));
-        }
-        $relations = implode(',', $relations);
-
-        $subquery = (new Query())
-            ->select([
-                'key_type' => 'a.key_type',
-                'id' => 'COALESCE(a.changeset_id, a.transaction_id, a.action_id)',
-            ])
-            ->from($behavior->auditTableName.' a')
-            ->leftJoin($behavior->changesetTableName.' c', 'c.id = a.changeset_id')
-            ->where($conditions)
-            ->groupBy(['a.key_type', 'COALESCE(a.changeset_id, a.transaction_id, a.action_id)']);
-        $subquery->addParams($params);
-        $countQuery = clone $subquery;
-        $countQuery->select(['COUNT(DISTINCT ROW(a.key_type, COALESCE(a.changeset_id, a.transaction_id, a.action_id)))']);
-        $countQuery->groupBy([]);
-        $command = $subquery->createCommand($staticModel->getDb());
-        return new SqlDataProvider([
-            'sql' => $command->getSql(),
-            'params' => $command->params,
-            'totalCount' => $countQuery->scalar($staticModel->getDb()),
-            'pagination' => [
-                'pageSize' => 20,
-            ],
-            'key' => function ($model) {
-                return $model['key_type'] . $model['id'];
-            },
-        ]);
-    }
-
-    private function getChanges($keys, $relations, $tablesMap)
+    private function getTablesMap()
     {
         /** @var $modelClass \yii\db\ActiveRecord */
         $modelClass = $this->modelClass;
         /** @var \yii\db\ActiveRecord $staticModel */
         $staticModel = new $modelClass;
-        /** @var TrackableBehavior $behavior */
-        $behavior = $staticModel->getBehavior('trackable');
 
-        $rows = (new Query())
-            ->select(['*', 'COALESCE(a.changeset_id, a.transaction_id, a.action_id) AS id'])
-            ->from($behavior->auditTableName.' a')
-            ->leftJoin($behavior->changesetTableName.' c', 'c.id = a.changeset_id')
-            ->where([
-                'AND',
-                'a.statement_only = FALSE',
-                ['OR', "a.key_type != 't'", ['IN', '(a.relation_id::regclass::varchar)', $relations]],
-                [
-                    'IN',
-                    ['a.key_type', 'COALESCE(a.changeset_id, a.transaction_id, a.action_id)'],
-                    array_map(function ($model) {
-                        return [
-                            'a.key_type' => $model['key_type'],
-                            'COALESCE(a.changeset_id, a.transaction_id, a.action_id)' => $model['id'],
-                        ];
-                    }, $keys),
-                ],
-            ])
-            ->orderBy('a.action_date')
-            ->all($staticModel->getDb());
-        $models = [];
-        foreach ($rows as $row) {
-            if (!isset($models[$row['key_type'] . $row['id']])) {
-                $models[$row['key_type'] . $row['id']] = [
-                    'key_type' => $row['key_type'],
-                    'id' => $row['id'],
-                    'actions' => [],
-                ];
-            }
-            $row['row_data'] = (array)json_decode($row['row_data']);
-            $row['changed_fields'] = (array)json_decode($row['changed_fields']);
-            if ($row['request_date'] === null) {
-                $row['request_date'] = $row['action_date'];
-            }
-            if ($row['request_url'] === null) {
-                $row['request_url'] = '<abbr title="Command-line Interpreter">CLI</abbr>';
-            }
-            if (isset($tablesMap[$row['schema_name'] . '.' . $row['table_name']])) {
-                $row['modelClass'] = $tablesMap[$row['schema_name'] . '.' . $row['table_name']];
-                /** @var ActiveRecord $model */
-                $model = new $row['modelClass'];
-                $model::populateRecord($model, $row['row_data']);
-                $row['model'] = $model;
-            }
-            $row['user'] = $row['user_id'] === null ? \Yii::t('app', 'system') : (string)User::findOne($row['user_id']);
-
-            $models[$row['key_type'] . $row['id']]['actions'][] = $row;
+        if ($staticModel instanceof \netis\utils\crud\ActiveRecord) {
+            $relationNames = $staticModel->relations();
+        } else {
+            $relationNames = $this->getRelationNames($modelClass);
         }
-        return $models;
+        $tablesMap = [
+            $modelClass::getTableSchema()->fullName => $modelClass,
+        ];
+        foreach ($relationNames as $relationName) {
+            /** @var \yii\db\ActiveQuery $relation */
+            $relation = $staticModel->getRelation($relationName);
+            /** @var \yii\db\ActiveRecord $relationClass */
+            $relationClass = $relation->modelClass;
+            $tablesMap[$relationClass::getTableSchema()->fullName] = $relationClass;
+        }
+
+        return $tablesMap;
+    }
+
+    private function getRelationNames($modelClass)
+    {
+        $relationNames = [];
+        $class = new \ReflectionClass($modelClass);
+        foreach ($class->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
+            if (substr($method->name, 0, 3) !== 'get') {
+                continue;
+            }
+            $phpDoc = $this->processPHPDoc($method);
+            if (!isset($phpDoc['return'])) {
+                continue;
+            }
+            $returnType = explode(' ', $phpDoc['return'], 2);
+            $returnType = reset($returnType);
+            if ($returnType === false) {
+                continue;
+            }
+            try {
+                /** @var ActiveQuery $returnType */
+                $query = new $returnType($modelClass);
+            } catch (Exception $e) {
+                continue;
+            }
+            if (!$query instanceof ActiveQuery) {
+                continue;
+            }
+            $relationNames[] = lcfirst(substr($method->name, 3));
+        }
+        return $relationNames;
+    }
+
+    /**
+     * @param \ReflectionMethod $reflect
+     * @return array two keys: params (array) and return (string)
+     */
+    private function processPHPDoc(\ReflectionMethod $reflect)
+    {
+        $phpDoc = ['params' => [], 'return' => null];
+        $docComment = $reflect->getDocComment();
+        if (trim($docComment) == '') {
+            return null;
+        }
+        $docComment = preg_replace('#[ \t]*(?:\/\*\*|\*\/|\*)?[ ]{0,1}(.*)?#', '$1', $docComment);
+        $docComment = ltrim($docComment, "\r\n");
+        while (($newlinePos = strpos($docComment, "\n")) !== false) {
+            $line = substr($docComment, 0, $newlinePos);
+
+            $matches = [];
+            if (strpos($line, '@') !== 0
+                || !preg_match('#^(@\w+.*?)(\n)(?:@|\r?\n|$)#s', $docComment, $matches)
+            ) {
+                continue;
+            }
+            $tagDocblockLine = $matches[1];
+            $matches = [];
+
+            if (!preg_match('#^@(\w+)(\s|$)#', $tagDocblockLine, $matches)) {
+                break;
+            }
+            $matches = [];
+            if (!preg_match('#^@(\w+)\s+([\w|\\\]+)(?:\s+(\$\S+))?(?:\s+(.*))?#s', $tagDocblockLine, $matches)) {
+                break;
+            }
+            if ($matches[1] != 'param') {
+                if (strtolower($matches[1]) == 'return') {
+                    $phpDoc['return'] = ['type' => $matches[2]];
+                }
+            } else {
+                $phpDoc['params'][] = ['name' => $matches[3], 'type' => $matches[2]];
+            }
+
+            $docComment = str_replace($matches[1] . $matches[2], '', $docComment);
+        }
+
+        return $phpDoc;
     }
 
     /**
      * Prepares the data provider that should return the requested collection of the models.
      * @param ActiveRecord $model
-     * @return ActiveDataProvider
+     * @return DataProviderInterface
      */
     protected function prepareDataProvider($model)
     {
@@ -174,32 +169,6 @@ class HistoryAction extends \yii\rest\Action
             return call_user_func($this->prepareDataProvider, $this);
         }
 
-        /** @var $modelClass \yii\db\ActiveRecord */
-        $modelClass = $this->modelClass;
-        /** @var \yii\db\ActiveRecord $staticModel */
-        $staticModel = new $modelClass;
-
-        $tablesMap = [];
-        $relations = [];
-        $relationNames = [];
-        if ($staticModel instanceof \netis\utils\crud\ActiveRecord) {
-            $relationNames = $staticModel->relations();
-        }
-        foreach ($relationNames as $relationName) {
-            /** @var \yii\db\ActiveQuery $relation */
-            $relation = $staticModel->getRelation($relationName);
-            /** @var \yii\db\ActiveRecord $relationClass */
-            $relationClass = $relation->modelClass;
-            $tablesMap[$relationClass::getTableSchema()->fullName] = $relationClass;
-            $relations[] = $relationClass::getTableSchema()->fullName;
-        }
-
-        $tablesMap[$modelClass::getTableSchema()->fullName] = $modelClass;
-        $relations[] = $modelClass::getTableSchema()->fullName;
-
-        $dataProvider = $this->getKeysDataprovider($model, array_keys($tablesMap));
-        $dataProvider->setModels($this->getChanges($dataProvider->getModels(), array_keys($tablesMap), $tablesMap));
-
-        return $dataProvider;
+        return Action::getDataProvider($this->modelClass, $this->getTablesMap(), $model);
     }
 }
