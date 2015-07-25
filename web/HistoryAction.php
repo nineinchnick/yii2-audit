@@ -7,6 +7,7 @@
 namespace nineinchnick\audit\web;
 
 use nineinchnick\audit\models\Action;
+use nineinchnick\audit\models\ActionSearch;
 use yii\base\Exception;
 use yii\data\ActiveDataProvider;
 use yii\data\DataProviderInterface;
@@ -43,12 +44,17 @@ class HistoryAction extends \yii\rest\Action
         if ($this->checkAccess) {
             call_user_func($this->checkAccess, $this->id, $model);
         }
+        $searchModel = new ActionSearch();
+        if ($searchModel->load(\Yii::$app->request->getQueryParams())) {
+            $searchModel->validate();
+        }
 
-        $dataProvider = $this->prepareDataProvider($model);
+        $dataProvider = $this->prepareDataProvider($model, $searchModel);
 
         if (\Yii::$app->response->format === \yii\web\Response::FORMAT_HTML) {
             return $this->controller->render($this->viewName, [
                 'model' => $model,
+                'searchModel' => $searchModel,
                 'dataProvider' => $dataProvider,
             ]);
         }
@@ -161,14 +167,15 @@ class HistoryAction extends \yii\rest\Action
     /**
      * Prepares the data provider that should return the requested collection of the models.
      * @param ActiveRecord $model
+     * @param \nineinchnick\audit\models\ActionSearch $searchModel
      * @return DataProviderInterface
      */
-    protected function prepareDataProvider($model)
+    protected function prepareDataProvider($model, $searchModel)
     {
         if ($this->prepareDataProvider !== null) {
-            return call_user_func($this->prepareDataProvider, $this);
+            return call_user_func($this->prepareDataProvider, $this, $model, $searchModel);
         }
 
-        return Action::getDataProvider($this->modelClass, $this->getTablesMap(), $model);
+        return Action::getDataProvider($this->modelClass, $this->getTablesMap(), $model, $searchModel);
     }
 }

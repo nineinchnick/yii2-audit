@@ -23,13 +23,17 @@ use yii\db\Query;
 class Action extends Model
 {
     /**
-     * @var integer unique only together with $key_type
+     * @var integer changeset id, unique only together with $key_type
      */
     public $id;
     /**
      * @var string one of: c for changeset, t for transaction or a for a single action
      */
     public $key_type;
+    /**
+     * @var integer
+     */
+    public $action_id;
 
 
     /**
@@ -107,6 +111,9 @@ class Action extends Model
         ];
     }
 
+    /**
+     * @return string representation of User found using user_id
+     */
     public function getUser()
     {
         if ($this->user_id === null) {
@@ -121,6 +128,9 @@ class Action extends Model
             : \Yii::t('app', 'User') . ' ' . implode('-', $user->getPrimaryKey(true));
     }
 
+    /**
+     * @return ActiveRecord modelClass instance
+     */
     public function getModel()
     {
         if ($this->cachedModel !== null) {
@@ -133,6 +143,9 @@ class Action extends Model
         return $this->cachedModel;
     }
 
+    /**
+     * @return string translated label for action_type
+     */
     public function getActionTypeLabel()
     {
         return $this->actionTypeMap[$this->action_type];
@@ -161,6 +174,9 @@ class Action extends Model
         $this->setAttributes($data, false);
     }
 
+    /**
+     * @return array row data
+     */
     public function getRowData()
     {
         return $this->data;
@@ -169,11 +185,13 @@ class Action extends Model
     /**
      * @param string $modelClass
      * @param ActiveRecord $model
-     * @param array $relations
+     * @param ActionSearch $searchModel
+     * @param array $tablesMap
      * @return SqlDataProvider
      */
-    private static function getKeysDataprovider($modelClass, $model, $relations)
+    private static function getKeysDataprovider($modelClass, $model, $searchModel, $tablesMap)
     {
+        $relations = array_keys($tablesMap);
         /** @var \yii\db\ActiveRecord $staticModel */
         $staticModel = new $modelClass;
         /** @var TrackableBehavior $behavior */
@@ -183,6 +201,9 @@ class Action extends Model
         if ($model !== null) {
             $conditions[] = "a.row_data @> (:key)::jsonb";
             $params[':key'] = json_encode($model->getPrimaryKey(true));
+        }
+        if ($searchModel !== null) {
+            list($conditions, $params) = $searchModel->getConditions($conditions, $params, $tablesMap);
         }
 
         $subquery = (new Query())
@@ -198,7 +219,7 @@ class Action extends Model
         $countQuery = clone $subquery;
         $countQuery->select(['COUNT(DISTINCT ROW(a.key_type, COALESCE(a.changeset_id, a.transaction_id, a.action_id)))']);
         $countQuery->groupBy([]);
-        $command = $subquery->createCommand($staticModel->getDb());
+        $command = $subquery->orderBy('max(a.action_date) DESC')->createCommand($staticModel->getDb());
         return new SqlDataProvider([
             'sql' => $command->getSql(),
             'params' => $command->params,
@@ -245,7 +266,7 @@ class Action extends Model
                     }, $keys),
                 ],
             ])
-            ->orderBy('a.action_date')
+            ->orderBy('a.action_date DESC')
             ->all($staticModel->getDb());
         $models = [];
         foreach ($rows as $row) {
@@ -259,7 +280,7 @@ class Action extends Model
 
             $action = new Action;
             $action->setRowData($row, $tablesMap);
-            $models[$row['key_type'] . $row['id']]['actions'][] = $action;
+            $models[$row['key_type'] . $row['id']]['actions'][$action->action_id] = $action;
         }
         return $models;
     }
@@ -267,12 +288,13 @@ class Action extends Model
     /**
      * @param string $modelClass
      * @param array $tablesMap
-     * @param ActiveRecord$model
+     * @param ActiveRecord $model
+     * @param ActionSearch $searchModel
      * @return SqlDataProvider
      */
-    public static function getDataProvider($modelClass, $tablesMap, $model = null)
+    public static function getDataProvider($modelClass, $tablesMap, $model = null, $searchModel = null)
     {
-        $dataProvider = self::getKeysDataprovider($modelClass, $model, array_keys($tablesMap));
+        $dataProvider = self::getKeysDataprovider($modelClass, $model, $searchModel, $tablesMap);
         $changes = self::getChanges($modelClass, $dataProvider->getModels(), array_keys($tablesMap), $tablesMap);
         $dataProvider->setModels($changes);
         return $dataProvider;
