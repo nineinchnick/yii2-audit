@@ -105,7 +105,7 @@ class ActionSearch extends Model
             $ids = array_filter(array_map('trim', explode(',', $this->model_classes)));
             $conditions = [
                 'IN',
-                '(a.relation_id::regclass::varchar)',
+                '(a.relation_id::regclass)',
                 array_keys(array_intersect($tablesMap, $ids)),
             ];
         }

@@ -169,6 +169,8 @@ class Action extends Model
         }
         if (isset($tablesMap[$data['schema_name'] . '.' . $data['table_name']])) {
             $data['modelClass'] = $tablesMap[$data['schema_name'] . '.' . $data['table_name']];
+        } else {
+            throw new \Exception('Cannot match a model class for table '.$data['schema_name'] . '.' . $data['table_name'] . ' in '.print_r($tablesMap, true));
         }
 
         $this->setAttributes($data, false);
@@ -196,7 +198,7 @@ class Action extends Model
         $staticModel = new $modelClass;
         /** @var TrackableBehavior $behavior */
         $behavior = $staticModel->getBehavior('trackable');
-        $conditions = ['AND', 'a.statement_only = FALSE', ['IN', '(a.relation_id::regclass::varchar)', $relations]];
+        $conditions = ['AND', 'a.statement_only = FALSE', ['IN', '(a.relation_id::regclass)', $relations]];
         $params = [];
         if ($model !== null) {
             $conditions[] = "a.row_data @> (:key)::jsonb";
@@ -254,7 +256,7 @@ class Action extends Model
             ->where([
                 'AND',
                 'a.statement_only = FALSE',
-                ['OR', "a.key_type != 't'", ['IN', '(a.relation_id::regclass::varchar)', $relations]],
+                ['OR', "a.key_type != 't'", ['IN', '(a.relation_id::regclass)', $relations]],
                 [
                     'IN',
                     ['a.key_type', 'COALESCE(a.changeset_id, a.transaction_id, a.action_id)'],

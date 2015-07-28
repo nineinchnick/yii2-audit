@@ -9,13 +9,19 @@ namespace nineinchnick\audit\web;
 use nineinchnick\audit\models\Action;
 use nineinchnick\audit\models\ActionSearch;
 use yii\base\Exception;
+use yii\base\Module;
 use yii\data\ActiveDataProvider;
 use yii\data\DataProviderInterface;
 use yii\db\ActiveQuery;
 use yii\db\ActiveRecord;
+use hanneskod\classtools\Iterator\ClassIterator;
+use Symfony\Component\Finder\Finder;
+
 
 class HistoryAction extends \yii\rest\Action
 {
+    const CACHE_KEY = 'history.tablesMap';
+
     /**
      * @var callable a PHP callable that will be called to prepare a data provider that
      * should return a collection of the models. If not set, [[prepareDataProvider()]] will be used instead.
@@ -34,6 +40,10 @@ class HistoryAction extends \yii\rest\Action
      * @var string view name to display model change history
      */
     public $viewName = 'history';
+    /**
+     * @var int how long the tables map will be cached; set to null to disable
+     */
+    public $cacheDuration = 3600;
 
     /**
      * @return ActiveDataProvider
@@ -74,17 +84,52 @@ class HistoryAction extends \yii\rest\Action
             $relationNames = $this->getRelationNames($modelClass);
         }
         $tablesMap = [
-            $modelClass::getTableSchema()->fullName => $modelClass,
+            $modelClass::getDb()->quoteSql($modelClass::tableName()) => $modelClass,
         ];
         foreach ($relationNames as $relationName) {
             /** @var \yii\db\ActiveQuery $relation */
             $relation = $staticModel->getRelation($relationName);
             /** @var \yii\db\ActiveRecord $relationClass */
             $relationClass = $relation->modelClass;
-            $tablesMap[$relationClass::getTableSchema()->fullName] = $relationClass;
+            $tablesMap[$modelClass::getDb()->quoteSql($relationClass::tableName())] = $relationClass;
         }
 
-        return $tablesMap;
+        return array_merge($tablesMap, $this->getModulesTablesMap());
+    }
+
+    private function getModulesTablesMap()
+    {
+        if ($this->cacheDuration !== null && ($result = \Yii::$app->cache->get(self::CACHE_KEY)) !== false) {
+            return $result;
+        }
+        $ds = DIRECTORY_SEPARATOR;
+        $dirs = [
+            \Yii::$app->getBasePath() . $ds . 'models',
+        ];
+        foreach (\Yii::$app->getModules() as $moduleId => $module) {
+            /** @var Module $module */
+            if (!$module instanceof Module) {
+                $module = \Yii::$app->getModule($moduleId);
+            }
+
+            if (file_exists($dir = $module->getBasePath() . $ds . 'models')) {
+                $dirs[] = $dir;
+            }
+        }
+        $iterator = new ClassIterator(Finder::create()->files()->name('*.php')->in($dirs));
+        $iterator->enableAutoloading();
+
+        $result = [];
+        /** @var \ReflectionClass $class */
+        foreach ($iterator->type('yii\db\ActiveRecord') as $name => $class) {
+            /** @var \yii\db\ActiveRecord $name */
+            $name = $class->name;
+            $result[$name::getDb()->quoteSql($name::tableName())] = $name;
+        }
+        if ($this->cacheDuration !== null) {
+            \Yii::$app->cache->set(self::CACHE_KEY, $result, $this->cacheDuration);
+        }
+        return $result;
     }
 
     private function getRelationNames($modelClass)
