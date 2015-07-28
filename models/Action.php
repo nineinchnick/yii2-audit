@@ -10,6 +10,7 @@ use nineinchnick\audit\behaviors\TrackableBehavior;
 use yii\base\Model;
 use yii\data\SqlDataProvider;
 use yii\db\ActiveRecord;
+use yii\db\Expression;
 use yii\db\Query;
 
 /**
@@ -152,8 +153,9 @@ class Action extends Model
     }
 
     /**
-     * @param array $data row data
+     * @param array $data      row data
      * @param array $tablesMap map of fully qualified table names to model class names
+     * @throws \Exception
      */
     public function setRowData($data, $tablesMap)
     {
@@ -170,7 +172,8 @@ class Action extends Model
         if (isset($tablesMap[$data['schema_name'] . '.' . $data['table_name']])) {
             $data['modelClass'] = $tablesMap[$data['schema_name'] . '.' . $data['table_name']];
         } else {
-            throw new \Exception('Cannot match a model class for table '.$data['schema_name'] . '.' . $data['table_name'] . ' in '.print_r($tablesMap, true));
+            throw new \Exception('Cannot match a model class for table ' . $data['schema_name'] . '.'
+                . $data['table_name'] . ' in ' . print_r($tablesMap, true));
         }
 
         $this->setAttributes($data, false);
@@ -193,35 +196,68 @@ class Action extends Model
      */
     private static function getKeysDataprovider($modelClass, $model, $searchModel, $tablesMap)
     {
-        $relations = array_keys($tablesMap);
         /** @var \yii\db\ActiveRecord $staticModel */
         $staticModel = new $modelClass;
         /** @var TrackableBehavior $behavior */
         $behavior = $staticModel->getBehavior('trackable');
-        $conditions = ['AND', 'a.statement_only = FALSE', ['IN', '(a.relation_id::regclass)', $relations]];
+        $conditions = [
+            'AND',
+            'a.statement_only = FALSE',
+            ['IN', '(a.relation_id::regclass)', array_keys($tablesMap['related'])],
+        ];
         $params = [];
         if ($model !== null) {
             $conditions[] = "a.row_data @> (:key)::jsonb";
             $params[':key'] = json_encode($model->getPrimaryKey(true));
         }
         if ($searchModel !== null) {
-            list($conditions, $params) = $searchModel->getConditions($conditions, $params, $tablesMap);
+            list($conditions, $params) = $searchModel->getConditions($conditions, $params, $tablesMap['all']);
         }
 
-        $subquery = (new Query())
+        $subQuery = (new Query())
             ->select([
-                'key_type' => 'a.key_type',
-                'id' => 'COALESCE(a.changeset_id, a.transaction_id, a.action_id)',
+                'key_type' => new Expression("'c'"),
+                'id' => 'a.changeset_id',
+                'action_date' =>  'MAX(a.action_date)',
             ])
             ->from($behavior->auditTableName.' a')
-            ->leftJoin($behavior->changesetTableName.' c', 'c.id = a.changeset_id')
             ->where($conditions)
-            ->groupBy(['a.key_type', 'COALESCE(a.changeset_id, a.transaction_id, a.action_id)']);
-        $subquery->addParams($params);
-        $countQuery = clone $subquery;
-        $countQuery->select(['COUNT(DISTINCT ROW(a.key_type, COALESCE(a.changeset_id, a.transaction_id, a.action_id)))']);
+            ->andWhere("key_type = 'c'")
+            ->groupBy('changeset_id')
+            ->union(
+                (new Query())
+                    ->select([
+                        'key_type' => new Expression("'t'"),
+                        'id' => 'a.transaction_id',
+                        'action_date' =>  'MAX(a.action_date)',
+                    ])
+                    ->from($behavior->auditTableName.' a')
+                    ->where($conditions)
+                    ->andWhere("key_type = 't'")
+                    ->groupBy('transaction_id'),
+                true
+            )
+            ->union(
+                (new Query())
+                    ->select([
+                        'key_type' => new Expression("'a'"),
+                        'id' => 'a.action_id',
+                        'action_date' =>  'a.action_date',
+                    ])
+                    ->from($behavior->auditTableName.' a')
+                    ->where($conditions)
+                    ->andWhere("key_type = 'a'"),
+                true
+            );
+
+        $query = (new Query())
+            ->select(['key_type', 'id'])
+            ->from(['a' => $subQuery]);
+        $query->addParams($params);
+        $countQuery = clone $query;
+        $countQuery->select(['COUNT(DISTINCT ROW(a.key_type, a.id))']);
         $countQuery->groupBy([]);
-        $command = $subquery->orderBy('max(a.action_date) DESC')->createCommand($staticModel->getDb());
+        $command = $query->orderBy('a.action_date DESC')->createCommand($staticModel->getDb());
         return new SqlDataProvider([
             'sql' => $command->getSql(),
             'params' => $command->params,
@@ -238,32 +274,33 @@ class Action extends Model
     /**
      * @param string $modelClass
      * @param array $keys each item has two keys: key_type and id
-     * @param array $relations
      * @param array $tablesMap maps fully qualified table names to model classes
      * @return Action[] indexed by concatenated key_type and id from keys
      */
-    private static function getChanges($modelClass, $keys, $relations, $tablesMap)
+    private static function getChanges($modelClass, $keys, $tablesMap)
     {
         /** @var \yii\db\ActiveRecord $staticModel */
         $staticModel = new $modelClass;
         /** @var TrackableBehavior $behavior */
         $behavior = $staticModel->getBehavior('trackable');
 
+        $idExpr = "(CASE a.key_type WHEN 'c' THEN a.changeset_id WHEN 't' THEN a.transaction_id ELSE a.action_id END)";
+
         $rows = (new Query())
-            ->select(['*', 'COALESCE(a.changeset_id, a.transaction_id, a.action_id) AS id'])
+            ->select(['*', "$idExpr AS id"])
             ->from($behavior->auditTableName.' a')
             ->leftJoin($behavior->changesetTableName.' c', 'c.id = a.changeset_id')
             ->where([
                 'AND',
                 'a.statement_only = FALSE',
-                ['OR', "a.key_type != 't'", ['IN', '(a.relation_id::regclass)', $relations]],
+                ['OR', "a.key_type != 't'", ['IN', '(a.relation_id::regclass)', array_keys($tablesMap)]],
                 [
                     'IN',
-                    ['a.key_type', 'COALESCE(a.changeset_id, a.transaction_id, a.action_id)'],
-                    array_map(function ($model) {
+                    ['a.key_type', $idExpr],
+                    array_map(function ($model) use ($idExpr) {
                         return [
                             'a.key_type' => $model['key_type'],
-                            'COALESCE(a.changeset_id, a.transaction_id, a.action_id)' => $model['id'],
+                            $idExpr => $model['id'],
                         ];
                     }, $keys),
                 ],
@@ -297,7 +334,7 @@ class Action extends Model
     public static function getDataProvider($modelClass, $tablesMap, $model = null, $searchModel = null)
     {
         $dataProvider = self::getKeysDataprovider($modelClass, $model, $searchModel, $tablesMap);
-        $changes = self::getChanges($modelClass, $dataProvider->getModels(), array_keys($tablesMap), $tablesMap);
+        $changes = self::getChanges($modelClass, $dataProvider->getModels(), $tablesMap['all']);
         $dataProvider->setModels($changes);
         return $dataProvider;
     }

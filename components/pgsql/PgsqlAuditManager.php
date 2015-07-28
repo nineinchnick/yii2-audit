@@ -111,7 +111,7 @@ SQL;
             $metaCase = <<<SQL
     audit_row.key_type = CASE
         WHEN audit_row.changeset_id IS NOT NULL THEN 'c'
-        WHEN audit_row.key_type IS NOT NULL THEN 't'
+        WHEN audit_row.transaction_id IS NOT NULL THEN 't'
         ELSE 'a'
     END;
 
@@ -342,7 +342,10 @@ SQL;
                 'schema_name, table_name', 'relation_id', 'statement_date',
                 'action_type', 'key_type', 'statement_only',
                 'row_data' => 'USING GIN (row_data jsonb_path_ops)',
-            ], $changesetTableName === null ? [] : [
+            ], $changesetTableName === null ? [
+                'key_type, (COALESCE(changeset_id, transaction_id, action_id))',
+            ] : [
+                'key_type, (COALESCE(transaction_id, action_id))',
                 'changeset_id',
             ]),
         ];

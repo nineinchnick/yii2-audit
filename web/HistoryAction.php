@@ -71,6 +71,20 @@ class HistoryAction extends \yii\rest\Action
         return $dataProvider;
     }
 
+    private function normalizeTablesMap($tablesMap)
+    {
+        $result = [];
+        // filter table names through sql to properly remove unnecessary quoting
+        $stringTablesMap = implode(', ', array_map(function ($t) {
+            return "'$t'";
+        }, array_keys($tablesMap)));
+        $query = "SELECT t::regclass AS raw, t AS original FROM unnest(ARRAY[$stringTablesMap]) AS t";
+        foreach (\Yii::$app->db->createCommand($query)->queryAll() as $row) {
+            $result[$row['raw']] = $tablesMap[$row['original']];
+        }
+        return $result;
+    }
+
     private function getTablesMap()
     {
         /** @var $modelClass \yii\db\ActiveRecord */
@@ -94,7 +108,10 @@ class HistoryAction extends \yii\rest\Action
             $tablesMap[$modelClass::getDb()->quoteSql($relationClass::tableName())] = $relationClass;
         }
 
-        return array_merge($tablesMap, $this->getModulesTablesMap());
+        return [
+            'related' => $this->normalizeTablesMap($tablesMap),
+            'all' => $this->normalizeTablesMap($this->getModulesTablesMap()),
+        ];
     }
 
     private function getModulesTablesMap()
