@@ -21,6 +21,12 @@ Install via composer:
 composer require nineinchnick/yii2-audit
 ~~~
 
+Warning! If the database is restored from a dump, it's necessary to reenumaret table oids in `audits.logged_actions.relation_id` column using the following query:
+
+~~~sql
+UPDATE audits.logged_actions SET relation_id = (schema_name || '.' || table_name)::regclass::oid;
+~~~
+
 ## Recording changes
 
 Attach the behavior to the model, after the Blameable and Timestamp behaviors:

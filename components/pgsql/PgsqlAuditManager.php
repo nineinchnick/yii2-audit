@@ -339,13 +339,14 @@ SQL;
             'exists' => $this->db->schema->getTableSchema("$schemaName.$auditTableName") !== null,
             'columns' => $auditColumns,
             'indexes' => array_merge([
-                'schema_name, table_name', 'relation_id', 'statement_date',
+                'schema_name, table_name',
+                'relation_id', 'statement_date',
                 'action_type', 'key_type', 'statement_only',
                 'row_data' => 'USING GIN (row_data jsonb_path_ops)',
             ], $changesetTableName === null ? [
-                'key_type, (COALESCE(changeset_id, transaction_id, action_id))',
+                "key_type, (CASE key_type WHEN 'c' THEN changeset_id WHEN 't' THEN transaction_id ELSE action_id END))",
             ] : [
-                'key_type, (COALESCE(transaction_id, action_id))',
+                "key_type, (CASE key_type WHEN 't' THEN transaction_id ELSE action_id END))",
                 'changeset_id',
             ]),
         ];
