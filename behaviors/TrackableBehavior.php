@@ -182,6 +182,62 @@ class TrackableBehavior extends Behavior
     }
 
     /**
+     * Returns all recorded values for specified attribute.
+     * @param string $attribute attribute name
+     * @return array attribute values indexed by version id
+     */
+    public function getAttributeVersions($attribute)
+    {
+        /** @var ActiveRecord $owner */
+        $owner = $this->owner;
+        return (new Query)
+            ->select([
+                'value' => "CASE action_type "
+                    . "WHEN 'INSERT' THEN jsonb_object_field_text(row_data, :attribute::text) "
+                    . "ELSE jsonb_object_field_text(changed_fields, :attribute::text) END",
+                'action_id',
+            ])
+            ->from($this->auditTableName)
+            ->where(['AND',
+                'relation_id = \''.$owner->tableName().'\'::regclass',
+                'statement_only = false',
+                ['OR',
+                    ['AND', 'action_type = \'INSERT\'', "jsonb_exists(row_data, :attribute)"],
+                    ['AND', 'action_type = \'UPDATE\'', "jsonb_exists(changed_fields, :attribute)"],
+                ],
+                'row_data @> :primaryKey',
+            ], [
+                //':tableName' => $owner->tableName(),
+                ':attribute' => $attribute,
+                ':primaryKey' => json_encode($owner->getPrimaryKey(true)),
+            ])
+            ->orderBy('action_id')
+            ->indexBy('action_id')
+            ->column($owner->getDb());
+    }
+
+    /**
+     * Returns ids of all recorded versions.
+     * @return array
+     */
+    public function getRecordVersions()
+    {
+        /** @var ActiveRecord $owner */
+        $owner = $this->owner;
+        return (new Query)
+            ->select('action_id')
+            ->from($this->auditTableName)
+            ->where(['AND',
+                'relation_id = (:tableName)::regclass',
+                'statement_only = false',
+                ['OR', 'action_type = \'INSERT\'', 'action_type = \'UPDATE\''],
+                ':primaryKey' => json_encode($owner->getPrimaryKey(true)),
+            ], [':tableName' => $owner->tableName()])
+            ->orderBy('action_id')
+            ->column($owner->getDb());
+    }
+
+    /**
      * Disables tracking, useful when using trigger mode.
      * @return bool
      */

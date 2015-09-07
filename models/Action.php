@@ -277,7 +277,7 @@ class Action extends Model
      * @param array $tablesMap maps fully qualified table names to model classes
      * @return Action[] indexed by concatenated key_type and id from keys
      */
-    private static function getChanges($modelClass, $keys, $tablesMap)
+    public static function getChanges($modelClass, $keys, $tablesMap)
     {
         /** @var \yii\db\ActiveRecord $staticModel */
         $staticModel = new $modelClass;

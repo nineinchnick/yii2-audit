@@ -7,26 +7,28 @@
 
 namespace nineinchnick\audit\controllers;
 
+use nineinchnick\audit\Module;
 use yii\web\Controller;
 use yii\filters\AccessControl;
 use Yii;
 use nineinchnick\audit\models\AuditForm;
 use yii\base\InvalidConfigException;
 use yii\db\Query;
+use yii\web\Response;
 
 class AuditController extends Controller
 {
 
     /**
      * Instance of selected table Model from configuration file
-     * 
-     * @var Model
+     *
+     * @var \yii\db\ActiveRecord
      */
     private $_currentModel;
 
     /**
      * List of columns that shouldn't be displayed
-     * 
+     *
      * @var array
      */
     public $hiddenColumns;
@@ -48,7 +50,7 @@ class AuditController extends Controller
 
     /**
      * Displays list of choosen audit table records
-     * 
+     *
      * @return string the rendering result
      */
     public function actionIndex()
@@ -58,9 +60,14 @@ class AuditController extends Controller
         $auditForm->addFormValidators($dynamicModel);
         $dataProvider = null;
         $arrayDiff = [];
+        /** @var Module $module */
+        $module = $this->module;
         if ($dynamicModel->load(Yii::$app->request->get()) && $dynamicModel->validate()) {
             $this->setCurrentModel($dynamicModel->table);
-            $this->hiddenColumns = array_merge($this->module->auditColumns, $this->module->tables[$dynamicModel->table]['hiddenColumns']);
+            $this->hiddenColumns = array_merge(
+                $module->auditColumns,
+                $module->tables[$dynamicModel->table]['hiddenColumns']
+            );
             $dataProvider = $this->createDataProvider($dynamicModel);
             $arrayDiff = [];
             $previousModel = null;
@@ -72,27 +79,32 @@ class AuditController extends Controller
             }
         }
         return $this->render('index', [
-                    'model' => $dynamicModel,
-                    'dataProvider' => $dataProvider,
-                    'arrayDiff' => $arrayDiff,
-                    'fields' => $auditForm->getFormFields($dynamicModel),
-                    'hiddenColumns' => $this->hiddenColumns,
+            'model' => $dynamicModel,
+            'dataProvider' => $dataProvider,
+            'arrayDiff' => $arrayDiff,
+            'fields' => $auditForm->getFormFields($dynamicModel),
+            'hiddenColumns' => $this->hiddenColumns,
         ]);
     }
 
     /**
      * Restores record from audit
-     * 
+     *
      * @return Response last visited page
      */
     public function actionRestore()
     {
         $post = Yii::$app->request->post();
         $query = new Query;
-        $audit = $query->from("audits.{$post['table']}")->where('audit_id = :audit_id', ['audit_id' => $post['audit_id']])->one();
+        $audit = $query
+            ->from("audits.{$post['table']}")
+            ->where('audit_id = :audit_id', ['audit_id' => $post['audit_id']])
+            ->one();
         $this->setCurrentModel($post['table']);
         $criteria = [];
-        foreach ($this->_currentModel->primaryKey() as $primaryKey) {
+        /** @var \yii\db\ActiveRecord $model */
+        $model = $this->_currentModel;
+        foreach ($model->primaryKey() as $primaryKey) {
             $criteria[$primaryKey] = $audit[$primaryKey];
         }
         foreach ($this->module->tables[$post['table']]['updateSkip'] as $column) {
@@ -100,7 +112,8 @@ class AuditController extends Controller
                 unset($audit[$column]);
             }
         }
-        $record = $this->_currentModel->findOne($criteria);
+        /** @var \yii\db\ActiveRecord $record */
+        $record = $model->findOne($criteria);
         $record->setAttributes($audit, false);
         if ($record->save()) {
             Yii::$app->session->setFlash('success', Yii::t('app', 'Record has been restored.'));
@@ -112,7 +125,7 @@ class AuditController extends Controller
 
     /**
      * Sets to _currentModel property current model instance from configuration file
-     * 
+     *
      * @param string $table
      * @throws InvalidConfigException
      */
@@ -121,12 +134,13 @@ class AuditController extends Controller
         if (!isset($this->module->tables[$table]['model'])) {
             throw new InvalidConfigException(Yii::t('app', 'Table model has to be set in config file'));
         }
-        $this->_currentModel = new $this->module->tables[$table]['model'];
+        $modelClass = $this->module->tables[$table]['model'];
+        $this->_currentModel = new $modelClass;
     }
 
     /**
      * Creates dataProvider
-     * 
+     *
      * @param \yii\base\Model $modelForm
      * @return \yii\data\SqlDataProvider
      */
@@ -156,7 +170,7 @@ class AuditController extends Controller
 
     /**
      * Adds join statement to basic query from relations declared in config files
-     * 
+     *
      * @param \yii\db\Query $query
      * @param string $table
      * @return array $columns to select statement
@@ -165,11 +179,17 @@ class AuditController extends Controller
     {
         $relations = [];
         $columns = [];
-        if (isset($this->module->tables[$table]['relations'])) {
-            $relations = $this->module->tables[$table]['relations'];
+        /** @var Module $module */
+        $module = $this->module;
+        if (isset($module->tables[$table]['relations'])) {
+            $relations = $module->tables[$table]['relations'];
         }
         foreach ($relations as $relation => $relationParams) {
-            $query->join($relationParams['type'], $relationParams['table'] . ' ' . $relationParams['alias'], $relationParams['on']);
+            $query->join(
+                $relationParams['type'],
+                $relationParams['table'] . ' ' . $relationParams['alias'],
+                $relationParams['on']
+            );
             $columns[] = $relationParams['alias'] . '.' . $relationParams['representive_columns'] . ' ' . $relation;
         }
 
@@ -178,19 +198,20 @@ class AuditController extends Controller
 
     /**
      * Gets differences between current and previous dataProvider element
-     * 
+     *
      * @param array $model
-     * @param yii\base\Model $modelForm
+     * @param \yii\base\Model $modelForm
      * @param array $previousModel
      * @param integer $auditId
-     * @return type
+     * @return string
      */
     public function createDiff($model, $modelForm, $previousModel, $auditId)
     {
         if ($previousModel) {
             $diff = array_diff_assoc($model, $previousModel);
         } else {
-            //If dataProvider doesn't have previous element we should select it directly from table in condition if this is for example new page.
+            // if dataProvider doesn't have previous element we should select it directly from table
+            // in condition if this is for example new page.
             $prev = $this->getPrevious($modelForm, $auditId);
             if (!empty($prev)) {
                 $diff = array_diff_assoc($model, $prev);
@@ -198,28 +219,35 @@ class AuditController extends Controller
                 $diff = $model;
             }
         }
-        $arrayDiff = join('; ', array_map(function ($v, $k) {
-                    return $k . '=' . $v;
-                }, $diff, $this->getColumnsLabel(array_keys($diff), $modelForm->table)));
-
+        $arrayDiff = implode('; ', array_map(
+            function ($v, $k) {
+                return $k . '=' . $v;
+            },
+            $diff,
+            $this->getColumnsLabel(array_keys($diff), $modelForm->table)
+        ));
         return $arrayDiff;
     }
 
     /**
      * Gets attributes label from current model
-     * 
+     *
      * @param array $columns
      * @return array
      */
     public function getColumnsLabel($columns, $table)
     {
-        $attributeLabels = $this->_currentModel->attributeLabels();
-        $relations = $this->module->tables[$table]['relations'];
+        /** @var \yii\db\ActiveRecord $model */
+        $model = $this->_currentModel;
+        /** @var Module $module */
+        $module = $this->module;
+        $attributeLabels = $model->attributeLabels();
+        $relations = $module->tables[$table]['relations'];
         $columnsLabel = [];
         foreach ($columns as $attribute) {
             if (isset($attributeLabels[$attribute])) {
                 $columnsLabel[] = $attributeLabels[$attribute];
-            } else if (isset($relations[$attribute]['label'])) {
+            } elseif (isset($relations[$attribute]['label'])) {
                 $columnsLabel[] = $relations[$attribute]['label'];
             } else {
                 $columnsLabel[] = $attribute;
@@ -231,16 +259,20 @@ class AuditController extends Controller
 
     /**
      * Gets attribute label from current model
-     * 
+     *
      * @param string $column
      * @return string
      */
     public function getColumnLabel($column, $table)
     {
-        if (isset($this->_currentModel->attributeLabels()[$column])) {
-            return $this->_currentModel->attributeLabels()[$column];
-        } elseif ($this->module->tables[$table]['relations'][$column]['label']) {
-            return $this->module->tables[$table]['relations'][$column]['label'];
+        /** @var \yii\db\ActiveRecord $model */
+        $model = $this->_currentModel;
+        /** @var Module $module */
+        $module = $this->module;
+        if (isset($model->attributeLabels()[$column])) {
+            return $model->attributeLabels()[$column];
+        } elseif ($module->tables[$table]['relations'][$column]['label']) {
+            return $module->tables[$table]['relations'][$column]['label'];
         } else {
             return $column;
         }
@@ -248,9 +280,9 @@ class AuditController extends Controller
 
     /**
      * Prepares where condition
-     * 
+     *
      * @param Query $query
-     * @param yii\base\Model $modelForm
+     * @param \yii\base\Model $modelForm
      * @return string
      */
     public function prepareCondition(&$query, $modelForm)
@@ -260,14 +292,16 @@ class AuditController extends Controller
                 continue;
             }
             $filterConfig = Yii::$app->controller->module->filters[$attribute];
-            $query->andWhere("{$filterConfig['attribute']} {$filterConfig['criteria']['operator']} :{$attribute}", [$attribute => $modelForm[$attribute]]);
+            $query->andWhere("{$filterConfig['attribute']} {$filterConfig['criteria']['operator']} :{$attribute}", [
+                $attribute => $modelForm[$attribute],
+            ]);
         }
     }
 
     /**
      * Gets previous element from database
-     * 
-     * @param yii\base\Model $modelForm
+     *
+     * @param \yii\base\Model $modelForm
      * @param integer $auditId
      * @return array
      */
@@ -286,7 +320,6 @@ class AuditController extends Controller
 
     /**
      * Unset all columns from dataProvider element that shouldn't be displayed
-     * 
      * @param array $model
      * @return array $model
      */
@@ -302,7 +335,6 @@ class AuditController extends Controller
 
     /**
      * Creates dynamic audit form
-     * 
      * @return \yii\base\DynamicModel
      */
     public function createAuditForm()
