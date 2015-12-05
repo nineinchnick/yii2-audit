@@ -92,7 +92,7 @@ class HistoryAction extends \yii\rest\Action
         /** @var \yii\db\ActiveRecord $staticModel */
         $staticModel = new $modelClass;
 
-        if ($staticModel instanceof \netis\utils\crud\ActiveRecord) {
+        if ($staticModel instanceof \netis\crud\db\ActiveRecord) {
             $relationNames = $staticModel->relations();
         } else {
             $relationNames = $this->getRelationNames($modelClass);
